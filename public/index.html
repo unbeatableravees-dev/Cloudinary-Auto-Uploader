@@ -8,8 +8,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
-  <!-- Lucide Icons -->
+  <!-- Lucide Icons & JSZip -->
   <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
 <body>
   <div class="app-background">
@@ -47,23 +48,6 @@
         </a>
       </div>
     </header>
-
-    <!-- Remote Host Notice Banner (Only displayed when opened outside localhost, e.g. on Firebase) -->
-    <div id="remoteNoticeBanner" class="remote-notice-card hidden">
-      <div class="remote-notice-icon">
-        <i data-lucide="info"></i>
-      </div>
-      <div class="remote-notice-body">
-        <strong>Backend Connection:</strong>
-        <span>
-          You are viewing the app on Firebase Hosting. Multi-GB video extraction and processing run through your local Node.js engine.
-          Open <a href="http://localhost:3000" class="local-link">http://localhost:3000</a> on your PC for full direct processing.
-        </span>
-      </div>
-      <a href="http://localhost:3000" class="btn-sm btn-accent" style="white-space:nowrap;">
-        <i data-lucide="external-link"></i> Open Local App
-      </a>
-    </div>
 
     <!-- Main Content Area -->
     <main class="main-content">

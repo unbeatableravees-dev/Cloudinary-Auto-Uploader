@@ -1,4 +1,5 @@
-// Cloudinary Multi-ZIP Auto-Uploader Frontend Logic
+// Cloudinary Multi-ZIP Auto-Uploader
+// Native Client-Side Streaming Engine: Extracts & Uploads As Files Are Unpacked
 
 document.addEventListener('DOMContentLoaded', () => {
   // Elements
@@ -61,72 +62,48 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // State
   let selectedFiles = []; // Array of File objects
-  let activeEventSource = null;
-  let currentJobId = null;
   let completedItems = [];
+  let isProcessing = false;
+  let cancelRequested = false;
 
-  // Intelligent API Base URL detection
-  const isLocalOrigin = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-  let apiBaseUrl = isLocalOrigin
-    ? ''
-    : (localStorage.getItem('cld_backend_url') || 'http://localhost:3000');
+  const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.webm', '.wmv', '.flv', '.m4v', '.3gp', '.ts']);
+  const TEXT_EXTENSIONS = new Set(['.txt', '.json', '.caption', '.md', '.sub', '.srt']);
 
-  // If on Firebase / remote host, display connection helper
-  const remoteNoticeBanner = document.getElementById('remoteNoticeBanner');
-  if (!isLocalOrigin && remoteNoticeBanner) {
-    remoteNoticeBanner.classList.remove('hidden');
-  }
-
-  // Safe JSON fetch wrapper to prevent "Unexpected token '<'" errors
-  async function safeFetchJson(url, options = {}) {
-    const fullUrl = url.startsWith('http') ? url : (apiBaseUrl + url);
-    let res;
-    try {
-      res = await fetch(fullUrl, options);
-    } catch (netErr) {
-      if (!isLocalOrigin) {
-        throw new Error(`Cannot reach backend at ${apiBaseUrl}. Please ensure your local server is running (start.bat) or open http://localhost:3000 directly.`);
-      }
-      throw netErr;
-    }
-
-    const contentType = res.headers.get('content-type') || '';
-    if (!contentType.includes('application/json')) {
-      if (!isLocalOrigin) {
-        throw new Error(`Firebase Hosting is static-only. Video processing requires the Node.js backend. Please open http://localhost:3000 on your machine.`);
-      }
-      const rawText = await res.text();
-      throw new Error(`Unexpected server response (${res.status}): ${rawText.substring(0, 100)}`);
-    }
-
-    const data = await res.json();
-    return { res, data };
-  }
+  const COMMON_STOP_WORDS = new Set([
+    'a', 'about', 'above', 'after', 'again', 'against', 'all', 'am', 'an', 'and', 'any', 'are',
+    'as', 'at', 'be', 'because', 'been', 'before', 'being', 'below', 'between', 'both', 'but', 'by',
+    'can', 'cannot', 'could', 'did', 'do', 'does', 'doing', 'down', 'during', 'each', 'few', 'for',
+    'from', 'further', 'had', 'has', 'have', 'having', 'he', 'her', 'here', 'hers', 'herself', 'him',
+    'himself', 'his', 'how', 'i', 'if', 'in', 'into', 'is', 'it', 'its', 'itself', 'me', 'more',
+    'most', 'my', 'myself', 'no', 'nor', 'not', 'of', 'off', 'on', 'once', 'only', 'or', 'other',
+    'ought', 'our', 'ours', 'ourselves', 'out', 'over', 'own', 'same', 'she', 'should', 'so', 'some',
+    'such', 'than', 'that', 'the', 'their', 'theirs', 'them', 'themselves', 'then', 'there', 'these',
+    'they', 'this', 'those', 'through', 'to', 'too', 'under', 'until', 'up', 'very', 'was', 'we',
+    'were', 'what', 'when', 'where', 'which', 'while', 'who', 'whom', 'why', 'with', 'would', 'you',
+    'your', 'yours', 'yourself', 'yourselves', 'video', 'file', 'mp4', 'mkv', 'clip', 'shorts', 'youtube'
+  ]);
 
   // Initialize icons
   lucide.createIcons();
 
-  // 1. Check existing Cloudinary Status on Load
-  checkCloudinaryStatus();
+  // Load Saved Cloudinary Credentials
+  loadSavedCredentials();
 
-  async function checkCloudinaryStatus() {
-    try {
-      const { data } = await safeFetchJson('/api/cloudinary/status');
-      if (data && data.isConfigured) {
-        setCloudinaryConnected(data.cloud_name, data.masked_key);
-      } else {
-        const savedName = localStorage.getItem('cld_cloud_name');
-        const savedKey = localStorage.getItem('cld_api_key');
-        if (savedName) cloudNameInput.value = savedName;
-        if (savedKey) apiKeyInput.value = savedKey;
-      }
-    } catch (e) {
-      console.warn('Could not check Cloudinary status', e.message);
+  function loadSavedCredentials() {
+    const savedName = localStorage.getItem('cld_cloud_name');
+    const savedKey = localStorage.getItem('cld_api_key');
+    const savedSecret = localStorage.getItem('cld_api_secret');
+
+    if (savedName) cloudNameInput.value = savedName;
+    if (savedKey) apiKeyInput.value = savedKey;
+    if (savedSecret) apiSecretInput.value = savedSecret;
+
+    if (savedName && savedKey && savedSecret) {
+      setCloudinaryConnected(savedName);
     }
   }
 
-  function setCloudinaryConnected(cloudName, keyMask = '') {
-    // Header badge
+  function setCloudinaryConnected(cloudName) {
     headerStatusBadge.innerHTML = `
       <span class="status-dot online"></span>
       <span class="status-text">Connected: <strong>${escapeHtml(cloudName)}</strong></span>
@@ -138,14 +115,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.getElementById('disconnectBtn').addEventListener('click', disconnectCloudinary);
 
-    // Show compact connected summary card
     if (authConnectedCard && connectedCloudNameDisplay) {
       connectedCloudNameDisplay.textContent = cloudName;
       authConnectedCard.classList.remove('hidden');
       authFormWrapper.classList.add('hidden');
     }
 
-    // Unlock upload workspace
     uploadSection.classList.remove('disabled-blur');
     cloudNameInput.value = cloudName;
   }
@@ -186,42 +161,82 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // 2. Auth Form Submit
+  // SHA-1 Signature using Web Crypto API
+  async function generateSignature(params, apiSecret) {
+    const sortedKeys = Object.keys(params).sort();
+    const toSign = sortedKeys.map(k => `${k}=${params[k]}`).join('&') + apiSecret;
+
+    const encoder = new TextEncoder();
+    const data = encoder.encode(toSign);
+    const hashBuffer = await crypto.subtle.digest('SHA-1', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  // Auth Form Submit
   authForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const cloudName = cloudNameInput.value.trim();
     const apiKey = apiKeyInput.value.trim();
     const apiSecret = apiSecretInput.value.trim();
-    const cloudinaryUrl = cloudinaryUrlInput.value.trim();
+
+    if (!cloudName || !apiKey || !apiSecret) {
+      alert('Please enter Cloud Name, API Key, and API Secret.');
+      return;
+    }
 
     btnConnect.disabled = true;
     btnConnect.innerHTML = `<span class="spinner"></span> Verifying...`;
     authAlert.classList.add('hidden');
 
     try {
-      const { data } = await safeFetchJson('/api/cloudinary/verify', {
+      // Test credentials with a signed 1x1 test verification
+      const timestamp = Math.round(Date.now() / 1000);
+      const testParams = {
+        public_id: `_verify_test_${Date.now()}`,
+        timestamp: String(timestamp)
+      };
+
+      const sig = await generateSignature(testParams, apiSecret);
+
+      const tiny1px = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAArows=';
+      const byteString = atob(tiny1px.split(',')[1]);
+      const ab = new ArrayBuffer(byteString.length);
+      const ia = new Uint8Array(ab);
+      for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
+      const testBlob = new Blob([ab], { type: 'image/png' });
+
+      const formData = new FormData();
+      formData.append('file', testBlob);
+      formData.append('api_key', apiKey);
+      formData.append('timestamp', timestamp);
+      formData.append('signature', sig);
+      formData.append('public_id', testParams.public_id);
+
+      const res = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/image/upload`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          cloud_name: cloudName,
-          api_key: apiKey,
-          api_secret: apiSecret,
-          cloudinary_url: cloudinaryUrl
-        })
+        body: formData
       });
 
-      if (data.success) {
+      const resData = await res.json();
+
+      if (res.ok && resData.secure_url) {
+        // Save in localStorage
         localStorage.setItem('cld_cloud_name', cloudName);
         localStorage.setItem('cld_api_key', apiKey);
-        setCloudinaryConnected(data.cloud_name);
-      } else {
-        authAlert.className = 'alert-message error';
-        authAlert.textContent = data.error || 'Connection failed. Please check credentials.';
+        localStorage.setItem('cld_api_secret', apiSecret);
+
+        setCloudinaryConnected(cloudName);
+        authAlert.className = 'alert-message success';
+        authAlert.textContent = `Connected to Cloudinary account: ${cloudName}`;
         authAlert.classList.remove('hidden');
+      } else {
+        throw new Error(resData.error?.message || 'Invalid Cloudinary credentials.');
       }
+
     } catch (err) {
       authAlert.className = 'alert-message error';
-      authAlert.textContent = err.message;
+      authAlert.textContent = 'Connection Error: ' + err.message;
       authAlert.classList.remove('hidden');
     } finally {
       btnConnect.disabled = false;
@@ -231,23 +246,17 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Disconnect Cloudinary
-  async function disconnectCloudinary() {
-    if (!confirm('Are you sure you want to disconnect your Cloudinary account?')) return;
-    try {
-      await safeFetchJson('/api/cloudinary/disconnect', { method: 'POST' });
-      localStorage.removeItem('cld_cloud_name');
-      localStorage.removeItem('cld_api_key');
-      window.location.reload();
-    } catch (e) {
-      alert('Error disconnecting: ' + e.message);
-    }
+  function disconnectCloudinary() {
+    if (!confirm('Are you sure you want to disconnect your Cloudinary credentials?')) return;
+    localStorage.removeItem('cld_cloud_name');
+    localStorage.removeItem('cld_api_key');
+    localStorage.removeItem('cld_api_secret');
+    window.location.reload();
   }
 
-  // 3. Multi-File Dropzone & Selection
+  // Multi-File Dropzone & Selection
   dropzone.addEventListener('click', (e) => {
-    if (e.target.closest('button') || e.target.closest('.zip-file-item')) {
-      return;
-    }
+    if (e.target.closest('button') || e.target.closest('.zip-file-item')) return;
     zipFileInput.click();
   });
 
@@ -293,7 +302,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     if (nonZipCount > 0) {
-      alert(`${nonZipCount} non-ZIP file(s) were skipped. Only .zip archives are supported.`);
+      alert(`${nonZipCount} non-ZIP file(s) were skipped.`);
     }
 
     updateSelectedUI();
@@ -316,9 +325,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const totalBytes = selectedFiles.reduce((acc, f) => acc + f.size, 0);
     selectedTotalSize.textContent = `${formatBytes(totalBytes)} total`;
 
-    // Render file list
     zipFilesList.innerHTML = '';
-    selectedFiles.forEach((file, index) => {
+    // Show top 100 in DOM for performance if there are 700+ files
+    const displayFiles = selectedFiles.slice(0, 100);
+    displayFiles.forEach((file, index) => {
       const item = document.createElement('div');
       item.className = 'zip-file-item';
       item.innerHTML = `
@@ -334,9 +344,17 @@ document.addEventListener('DOMContentLoaded', () => {
       zipFilesList.appendChild(item);
     });
 
+    if (selectedFiles.length > 100) {
+      const extraNotice = document.createElement('div');
+      extraNotice.style.fontSize = '0.75rem';
+      extraNotice.style.color = '#94a3b8';
+      extraNotice.style.padding = '4px 8px';
+      extraNotice.textContent = `...and ${selectedFiles.length - 100} more archives ready for ingestion`;
+      zipFilesList.appendChild(extraNotice);
+    }
+
     lucide.createIcons();
 
-    // Attach individual remove handlers
     document.querySelectorAll('.btn-remove-single-zip').forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -353,161 +371,386 @@ document.addEventListener('DOMContentLoaded', () => {
     updateSelectedUI();
   });
 
-  // 4. Start Upload & Multi-ZIP Processing
-  btnStartUpload.addEventListener('click', async () => {
-    if (selectedFiles.length === 0) return;
-
-    btnStartUpload.disabled = true;
-    uploadProgressContainer.classList.remove('hidden');
-    uploadProgressBar.style.width = '0%';
-    uploadProgressPercent.textContent = '0%';
-    uploadProgressLabel.textContent = `Transferring ${selectedFiles.length} ZIP archive(s) to server...`;
-
-    const formData = new FormData();
-    selectedFiles.forEach(file => {
-      formData.append('zipFiles', file);
-    });
-    formData.append('folderName', folderNameInput.value.trim() || 'zip_uploads');
-    formData.append('createSubfolders', subfolderToggle.checked ? 'true' : 'false');
-
-    const xhr = new XMLHttpRequest();
-    const uploadUrl = (apiBaseUrl ? apiBaseUrl : '') + '/api/upload-zip';
-    xhr.open('POST', uploadUrl, true);
-
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) {
-        const percent = Math.round((e.loaded / e.total) * 100);
-        uploadProgressBar.style.width = percent + '%';
-        uploadProgressPercent.textContent = percent + '%';
-        uploadProgressLabel.textContent = `Uploading archives (${selectedFiles.length} files): ${formatBytes(e.loaded)} / ${formatBytes(e.total)}`;
-      }
-    };
-
-    xhr.onload = async () => {
-      if (xhr.status === 200) {
-        const data = JSON.parse(xhr.responseText);
-        currentJobId = data.jobId;
-        uploadProgressLabel.textContent = `All ${data.zipCount} archives uploaded successfully! Initializing pipeline...`;
-
-        // Reveal Step 3
-        processingSection.classList.remove('hidden');
-        processingSection.scrollIntoView({ behavior: 'smooth' });
-
-        // Connect SSE for live logs and progress
-        listenToProgress(currentJobId);
-
-        // If autoStart, trigger process
-        if (autoStartToggle.checked) {
-          await triggerProcess(currentJobId);
-        }
-      } else {
-        try {
-          const errData = JSON.parse(xhr.responseText);
-          alert('Upload failed: ' + (errData.error || 'Server error'));
-        } catch (e) {
-          alert('Upload failed with status: ' + xhr.status);
-        }
-        btnStartUpload.disabled = false;
-      }
-    };
-
-    xhr.onerror = () => {
-      alert('Network error while transferring ZIP files.');
-      btnStartUpload.disabled = false;
-    };
-
-    xhr.send(formData);
-  });
-
-  async function triggerProcess(jobId) {
-    try {
-      await safeFetchJson(`/api/process/${jobId}`, { method: 'POST' });
-    } catch (e) {
-      console.error('Trigger process error', e);
-    }
+  // Natural Language & Metadata Analysis
+  function cleanTag(tag) {
+    if (!tag) return '';
+    return tag.replace(/[#,\r\n\t]/g, ' ').replace(/\s+/g, ' ').trim();
   }
 
-  // 5. Server-Sent Events (SSE) Stream
-  function listenToProgress(jobId) {
-    if (activeEventSource) {
-      activeEventSource.close();
+  function deriveTagsFromText(text) {
+    if (!text) return [];
+    const words = text
+      .toLowerCase()
+      .replace(/[^a-z0-9\s_\-\u0900-\u097F]/gi, ' ')
+      .split(/\s+/)
+      .filter(w => w.length >= 3 && !COMMON_STOP_WORDS.has(w) && !/^\d+$/.test(w));
+
+    const counts = new Map();
+    for (const w of words) counts.set(w, (counts.get(w) || 0) + 1);
+
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(entry => entry[0])
+      .slice(0, 15);
+  }
+
+  function parseTextMetadata(rawText, fallbackTitle = '') {
+    const text = (rawText || '').trim();
+    const tagsSet = new Set();
+    let title = fallbackTitle;
+    let description = '';
+    let caption = '';
+
+    if (!text) {
+      return {
+        title,
+        description,
+        caption,
+        tags: deriveTagsFromText(fallbackTitle)
+      };
     }
 
-    const sseUrl = (apiBaseUrl ? apiBaseUrl : '') + `/api/progress/${jobId}`;
-    activeEventSource = new EventSource(sseUrl);
-
-    activeEventSource.addEventListener('init', (e) => {
-      const data = JSON.parse(e.data);
-      if (data) {
-        if (data.totalVideos) totalCount.textContent = data.totalVideos;
-        if (data.completedVideos) completedCount.textContent = data.completedVideos;
-        if (data.failedVideos) failedCount.textContent = data.failedVideos;
-        if (data.progressPercent) {
-          pipelineProgressBar.style.width = data.progressPercent + '%';
-          overallPercent.textContent = data.progressPercent + '%';
+    // Check JSON
+    if (text.startsWith('{') && text.endsWith('}')) {
+      try {
+        const data = JSON.parse(text);
+        if (data.title) title = String(data.title);
+        if (data.description) description = String(data.description);
+        if (data.caption) caption = String(data.caption);
+        const rawTags = data.tags || data.keywords || [];
+        if (Array.isArray(rawTags)) {
+          rawTags.forEach(t => { const c = cleanTag(String(t)); if (c) tagsSet.add(c); });
         }
-        if (data.results && data.results.length > 0) {
-          resultsGrid.innerHTML = '';
-          completedItems = data.results;
-          completedItems.forEach(item => appendResultCard(item));
-          resultsSection.classList.remove('hidden');
+        if (tagsSet.size > 0) {
+          return { title, description: description || caption, caption, tags: Array.from(tagsSet) };
         }
+      } catch (e) {}
+    }
+
+    // Line by line extraction
+    const lines = text.split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      const titleMatch = trimmed.match(/^(?:title|name|video title)\s*[:=-]\s*(.+)$/i);
+      if (titleMatch) { title = titleMatch[1].trim(); continue; }
+
+      const descMatch = trimmed.match(/^(?:description|desc|details?|caption|summary)\s*[:=-]\s*(.+)$/i);
+      if (descMatch) { description = descMatch[1].trim(); continue; }
+
+      const tagsMatch = trimmed.match(/^(?:keywords?|tags?|hashtags?|keys?)\s*[:=-]\s*(.+)$/i);
+      if (tagsMatch) {
+        tagsMatch[1].split(/[,;\t|]/).forEach(t => {
+          const c = cleanTag(t);
+          if (c) tagsSet.add(c);
+        });
+        continue;
       }
-    });
 
-    activeEventSource.addEventListener('log', (e) => {
-      const data = JSON.parse(e.data);
-      appendTerminalLog(data.time, data.message, data.type);
-    });
-
-    activeEventSource.addEventListener('status', (e) => {
-      const data = JSON.parse(e.data);
-      if (data.percent !== undefined) {
-        pipelineProgressBar.style.width = data.percent + '%';
-        overallPercent.textContent = data.percent + '%';
+      const hashtags = trimmed.match(/#([a-zA-Z0-9_\u0900-\u097F]+)/g);
+      if (hashtags) {
+        hashtags.forEach(ht => {
+          const c = cleanTag(ht.replace(/^#/, ''));
+          if (c) tagsSet.add(c);
+        });
       }
-      if (data.status) {
-        jobStatusBadge.textContent = data.status.toUpperCase();
+    }
+
+    if (tagsSet.size === 0) {
+      if (text.includes(',') && !text.includes('\n\n')) {
+        text.split(/[,;\n]/).forEach(p => {
+          const c = cleanTag(p);
+          if (c && c.length <= 40) tagsSet.add(c);
+        });
+      } else {
+        deriveTagsFromText(text).forEach(t => tagsSet.add(t));
+        if (!description) description = text.substring(0, 300);
       }
-    });
+    }
 
-    activeEventSource.addEventListener('preview', (e) => {
-      const data = JSON.parse(e.data);
-      const count = data.total || (data.pairs ? data.pairs.length : 0);
-      totalCount.textContent = count;
-    });
+    if (tagsSet.size < 3 && title) {
+      deriveTagsFromText(title).forEach(t => tagsSet.add(t));
+    }
 
-    activeEventSource.addEventListener('item_complete', (e) => {
-      const item = JSON.parse(e.data);
-      completedItems.push(item);
-      completedCount.textContent = completedItems.length;
-      appendResultCard(item);
-      resultsSection.classList.remove('hidden');
-    });
-
-    activeEventSource.addEventListener('item_failed', (e) => {
-      const item = JSON.parse(e.data);
-      const curr = parseInt(failedCount.textContent, 10) || 0;
-      failedCount.textContent = curr + 1;
-    });
-
-    activeEventSource.addEventListener('finished', (e) => {
-      jobStatusBadge.textContent = 'COMPLETED';
-      jobStatusBadge.style.background = 'rgba(16, 185, 129, 0.2)';
-      jobStatusBadge.style.color = '#34d399';
-      pipelineProgressBar.style.width = '100%';
-      overallPercent.textContent = '100%';
-
-      appendTerminalLog(new Date().toLocaleTimeString(), 'Batch complete! All extracted videos have been processed and tagged in Cloudinary.', 'success');
-      resultsSection.classList.remove('hidden');
-      resultsSection.scrollIntoView({ behavior: 'smooth' });
-
-      activeEventSource.close();
-    });
-
-    activeEventSource.onerror = () => {
-      // Stream ended or connection lost
+    return {
+      title: title || fallbackTitle,
+      description: description || caption || text.substring(0, 300),
+      caption: caption || title || fallbackTitle,
+      tags: Array.from(tagsSet).slice(0, 30)
     };
+  }
+
+  function getFileExt(filename) {
+    const idx = filename.lastIndexOf('.');
+    return idx === -1 ? '' : filename.substring(idx).toLowerCase();
+  }
+
+  function getFileBaseName(filename) {
+    const name = filename.split('/').pop();
+    const idx = name.lastIndexOf('.');
+    return idx === -1 ? name : name.substring(0, idx);
+  }
+
+  // ---------------- STREAMING PIPELINE ----------------
+  // Real-time Extraction -> Immediate Upload -> Real-Time Card Injection
+  btnStartUpload.addEventListener('click', async () => {
+    if (selectedFiles.length === 0 || isProcessing) return;
+
+    const cloudName = localStorage.getItem('cld_cloud_name');
+    const apiKey = localStorage.getItem('cld_api_key');
+    const apiSecret = localStorage.getItem('cld_api_secret');
+
+    if (!cloudName || !apiKey || !apiSecret) {
+      alert('Please connect your Cloudinary account first.');
+      return;
+    }
+
+    if (typeof JSZip === 'undefined') {
+      alert('JSZip library is loading. Please check your internet connection and try again.');
+      return;
+    }
+
+    isProcessing = true;
+    btnStartUpload.disabled = true;
+    cancelRequested = false;
+
+    processingSection.classList.remove('hidden');
+    processingSection.scrollIntoView({ behavior: 'smooth' });
+
+    jobStatusBadge.textContent = 'STREAMING UPLOADS';
+    jobStatusBadge.style.background = 'rgba(6, 182, 212, 0.15)';
+    jobStatusBadge.style.color = '#06b6d4';
+
+    terminalLogs.innerHTML = '';
+    completedItems = [];
+    resultsGrid.innerHTML = '';
+    completedCount.textContent = '0';
+    failedCount.textContent = '0';
+    totalCount.textContent = 'Estimating...';
+
+    const rootFolder = (folderNameInput.value.trim() || 'zip_uploads').replace(/[^a-zA-Z0-9_/-]/g, '_');
+    const createSubfolders = subfolderToggle.checked;
+
+    appendTerminalLog(nowTime(), `🚀 Starting Streaming Ingestion of ${selectedFiles.length} ZIP archives...`, 'info');
+
+    let totalVideosDiscovered = 0;
+    let completedVideosCount = 0;
+    let failedVideosCount = 0;
+
+    for (let zIdx = 0; zIdx < selectedFiles.length; zIdx++) {
+      if (cancelRequested) break;
+
+      const currentZipFile = selectedFiles[zIdx];
+      const archiveNum = zIdx + 1;
+
+      appendTerminalLog(nowTime(), `[Archive ${archiveNum}/${selectedFiles.length}] Unpacking "${currentZipFile.name}" (${formatBytes(currentZipFile.size)})...`, 'info');
+
+      let zip;
+      try {
+        zip = await JSZip.loadAsync(currentZipFile);
+      } catch (err) {
+        appendTerminalLog(nowTime(), `Error reading ZIP "${currentZipFile.name}": ${err.message}`, 'error');
+        failedVideosCount++;
+        failedCount.textContent = failedVideosCount;
+        continue;
+      }
+
+      // Collect all text entries and video entries in this archive
+      const textFiles = [];
+      const videoFiles = [];
+
+      for (const [relativePath, entry] of Object.entries(zip.files)) {
+        if (entry.dir) continue;
+        const ext = getFileExt(relativePath);
+        if (TEXT_EXTENSIONS.has(ext)) {
+          textFiles.push({ relativePath, entry });
+        } else if (VIDEO_EXTENSIONS.has(ext)) {
+          videoFiles.push({ relativePath, entry });
+        }
+      }
+
+      if (videoFiles.length === 0) {
+        appendTerminalLog(nowTime(), `--> No video files found in "${currentZipFile.name}".`, 'warn');
+        continue;
+      }
+
+      totalVideosDiscovered += videoFiles.length;
+      totalCount.textContent = `${totalVideosDiscovered}+`;
+
+      // Read all text files in memory
+      const textContents = {};
+      for (const tf of textFiles) {
+        try {
+          textContents[tf.relativePath] = await tf.entry.async('string');
+        } catch (e) {
+          textContents[tf.relativePath] = '';
+        }
+      }
+
+      // AS EACH VIDEO IS EXTRACTED, IMMEDIATELY STREAM UPLOAD IT TO CLOUDINARY!
+      for (let vIdx = 0; vIdx < videoFiles.length; vIdx++) {
+        if (cancelRequested) break;
+
+        const { relativePath, entry } = videoFiles[vIdx];
+        const fileName = relativePath.split('/').pop();
+        const baseName = getFileBaseName(fileName);
+
+        // Find matching text file
+        let matchedTextContent = '';
+        let matchedTextPath = null;
+
+        // 1. Exact base match in same dir
+        for (const [tPath, content] of Object.entries(textContents)) {
+          if (getFileBaseName(tPath).toLowerCase() === baseName.toLowerCase()) {
+            matchedTextContent = content;
+            matchedTextPath = tPath;
+            break;
+          }
+        }
+        // 2. Fallback to any text in archive
+        if (!matchedTextContent && textFiles.length > 0) {
+          const firstPath = textFiles[0].relativePath;
+          matchedTextContent = textContents[firstPath] || '';
+          matchedTextPath = firstPath;
+        }
+
+        const metadata = parseTextMetadata(matchedTextContent, baseName.replace(/[_-]+/g, ' '));
+
+        appendTerminalLog(nowTime(), `Extracting "${fileName}" & preparing upload...`, 'info');
+
+        // Extract video blob
+        let videoBlob;
+        try {
+          videoBlob = await entry.async('blob');
+        } catch (extractErr) {
+          appendTerminalLog(nowTime(), `Failed to extract "${fileName}": ${extractErr.message}`, 'error');
+          failedVideosCount++;
+          failedCount.textContent = failedVideosCount;
+          continue;
+        }
+
+        // Determine destination folder
+        let folderPath = rootFolder;
+        if (createSubfolders) {
+          const cleanZipName = currentZipFile.name.replace(/\.zip$/i, '').replace(/[^a-zA-Z0-9_-]/g, '_');
+          folderPath = `${rootFolder}/${cleanZipName}`;
+        }
+
+        const cleanPublicId = `${baseName.replace(/[^a-zA-Z0-9_-]/g, '_')}_${Date.now()}`;
+        const tagsString = (metadata.tags || []).join(',');
+
+        appendTerminalLog(nowTime(), `--> Uploading "${fileName}" to Cloudinary (Tags: [${metadata.tags.slice(0, 5).join(', ')}])...`, 'info');
+
+        try {
+          // Prepare signed parameters
+          const timestamp = Math.round(Date.now() / 1000);
+          const uploadParams = {
+            folder: folderPath,
+            public_id: cleanPublicId,
+            timestamp: String(timestamp)
+          };
+          if (tagsString) {
+            uploadParams.tags = tagsString;
+          }
+
+          const signature = await generateSignature(uploadParams, apiSecret);
+
+          // Build multipart form data
+          const uploadFormData = new FormData();
+          uploadFormData.append('file', videoBlob, fileName);
+          uploadFormData.append('api_key', apiKey);
+          uploadFormData.append('timestamp', timestamp);
+          uploadFormData.append('signature', signature);
+          uploadFormData.append('folder', folderPath);
+          uploadFormData.append('public_id', cleanPublicId);
+          if (tagsString) {
+            uploadFormData.append('tags', tagsString);
+          }
+
+          // Direct Cloudinary Upload via XHR
+          const uploadResult = await new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', `https://api.cloudinary.com/v1_1/${cloudName}/video/upload`, true);
+
+            xhr.onload = () => {
+              if (xhr.status >= 200 && xhr.status < 300) {
+                try {
+                  resolve(JSON.parse(xhr.responseText));
+                } catch (e) {
+                  reject(new Error('Invalid response from Cloudinary'));
+                }
+              } else {
+                try {
+                  const errData = JSON.parse(xhr.responseText);
+                  reject(new Error(errData.error?.message || `HTTP ${xhr.status}`));
+                } catch (e) {
+                  reject(new Error(`Upload failed with HTTP ${xhr.status}`));
+                }
+              }
+            };
+
+            xhr.onerror = () => reject(new Error('Network error during upload'));
+            xhr.send(uploadFormData);
+          });
+
+          // Success item
+          completedVideosCount++;
+          completedCount.textContent = completedVideosCount;
+
+          const itemData = {
+            success: true,
+            fileName: fileName,
+            sourceZip: currentZipFile.name,
+            public_id: uploadResult.public_id,
+            secure_url: uploadResult.secure_url,
+            format: uploadResult.format,
+            bytes: uploadResult.bytes || videoBlob.size,
+            duration: uploadResult.duration,
+            tags: metadata.tags,
+            title: metadata.title,
+            matchedText: matchedTextPath
+          };
+
+          completedItems.push(itemData);
+          appendResultCard(itemData);
+          resultsSection.classList.remove('hidden');
+
+          appendTerminalLog(nowTime(), `✅ Uploaded "${fileName}"! URL: ${uploadResult.secure_url}`, 'success');
+
+        } catch (uploadError) {
+          failedVideosCount++;
+          failedCount.textContent = failedVideosCount;
+          appendTerminalLog(nowTime(), `❌ Failed to upload "${fileName}": ${uploadError.message}`, 'error');
+        }
+
+        // Update overall percentage
+        const overallFraction = (archiveNum / selectedFiles.length);
+        const percent = Math.min(99, Math.round(overallFraction * 100));
+        pipelineProgressBar.style.width = percent + '%';
+        overallPercent.textContent = percent + '%';
+      }
+    }
+
+    // Finished
+    totalCount.textContent = totalVideosDiscovered;
+    pipelineProgressBar.style.width = '100%';
+    overallPercent.textContent = '100%';
+
+    jobStatusBadge.textContent = 'COMPLETED';
+    jobStatusBadge.style.background = 'rgba(16, 185, 129, 0.2)';
+    jobStatusBadge.style.color = '#34d399';
+
+    appendTerminalLog(nowTime(), `🎉 All processing finished! ${completedVideosCount} video(s) uploaded successfully (${failedVideosCount} failed).`, 'success');
+    resultsSection.classList.remove('hidden');
+    resultsSection.scrollIntoView({ behavior: 'smooth' });
+
+    isProcessing = false;
+    btnStartUpload.disabled = false;
+  });
+
+  function nowTime() {
+    return new Date().toLocaleTimeString();
   }
 
   // Terminal Log Append
@@ -523,7 +766,7 @@ document.addEventListener('DOMContentLoaded', () => {
     terminalLogs.innerHTML = '';
   });
 
-  // 6. Results Gallery Card
+  // Results Card
   function appendResultCard(item) {
     const card = document.createElement('div');
     card.className = 'result-card';
@@ -568,7 +811,6 @@ document.addEventListener('DOMContentLoaded', () => {
     resultsGrid.appendChild(card);
     lucide.createIcons();
 
-    // Copy URL handler
     card.querySelector('.btn-copy-url').addEventListener('click', (e) => {
       const btn = e.currentTarget;
       const url = btn.getAttribute('data-url');
@@ -584,7 +826,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // 7. Export Results (JSON / CSV)
+  // Export Results
   btnExportJson.addEventListener('click', () => {
     if (completedItems.length === 0) return alert('No results available to export.');
     const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(completedItems, null, 2));
@@ -618,12 +860,11 @@ document.addEventListener('DOMContentLoaded', () => {
     document.body.removeChild(link);
   }
 
-  // 8. New Batch Reset
+  // New Batch Reset
   btnNewBatch.addEventListener('click', () => {
     if (!confirm('Start a new batch upload?')) return;
     selectedFiles = [];
     updateSelectedUI();
-    uploadProgressContainer.classList.add('hidden');
     processingSection.classList.add('hidden');
     resultsSection.classList.add('hidden');
     resultsGrid.innerHTML = '';
@@ -637,7 +878,6 @@ document.addEventListener('DOMContentLoaded', () => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   });
 
-  // Helpers
   function formatBytes(bytes, decimals = 2) {
     if (bytes === 0) return '0 Bytes';
     const k = 1024;
