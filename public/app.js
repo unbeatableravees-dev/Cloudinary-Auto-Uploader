@@ -65,6 +65,44 @@ document.addEventListener('DOMContentLoaded', () => {
   let currentJobId = null;
   let completedItems = [];
 
+  // Intelligent API Base URL detection
+  const isLocalOrigin = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+  let apiBaseUrl = isLocalOrigin
+    ? ''
+    : (localStorage.getItem('cld_backend_url') || 'http://localhost:3000');
+
+  // If on Firebase / remote host, display connection helper
+  const remoteNoticeBanner = document.getElementById('remoteNoticeBanner');
+  if (!isLocalOrigin && remoteNoticeBanner) {
+    remoteNoticeBanner.classList.remove('hidden');
+  }
+
+  // Safe JSON fetch wrapper to prevent "Unexpected token '<'" errors
+  async function safeFetchJson(url, options = {}) {
+    const fullUrl = url.startsWith('http') ? url : (apiBaseUrl + url);
+    let res;
+    try {
+      res = await fetch(fullUrl, options);
+    } catch (netErr) {
+      if (!isLocalOrigin) {
+        throw new Error(`Cannot reach backend at ${apiBaseUrl}. Please ensure your local server is running (start.bat) or open http://localhost:3000 directly.`);
+      }
+      throw netErr;
+    }
+
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      if (!isLocalOrigin) {
+        throw new Error(`Firebase Hosting is static-only. Video processing requires the Node.js backend. Please open http://localhost:3000 on your machine.`);
+      }
+      const rawText = await res.text();
+      throw new Error(`Unexpected server response (${res.status}): ${rawText.substring(0, 100)}`);
+    }
+
+    const data = await res.json();
+    return { res, data };
+  }
+
   // Initialize icons
   lucide.createIcons();
 
@@ -73,9 +111,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function checkCloudinaryStatus() {
     try {
-      const res = await fetch('/api/cloudinary/status');
-      const data = await res.json();
-      if (data.isConfigured) {
+      const { data } = await safeFetchJson('/api/cloudinary/status');
+      if (data && data.isConfigured) {
         setCloudinaryConnected(data.cloud_name, data.masked_key);
       } else {
         const savedName = localStorage.getItem('cld_cloud_name');
@@ -84,7 +121,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (savedKey) apiKeyInput.value = savedKey;
       }
     } catch (e) {
-      console.warn('Could not check Cloudinary status', e);
+      console.warn('Could not check Cloudinary status', e.message);
     }
   }
 
@@ -162,7 +199,7 @@ document.addEventListener('DOMContentLoaded', () => {
     authAlert.classList.add('hidden');
 
     try {
-      const res = await fetch('/api/cloudinary/verify', {
+      const { data } = await safeFetchJson('/api/cloudinary/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -173,7 +210,6 @@ document.addEventListener('DOMContentLoaded', () => {
         })
       });
 
-      const data = await res.json();
       if (data.success) {
         localStorage.setItem('cld_cloud_name', cloudName);
         localStorage.setItem('cld_api_key', apiKey);
@@ -185,7 +221,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     } catch (err) {
       authAlert.className = 'alert-message error';
-      authAlert.textContent = 'Server error while verifying credentials: ' + err.message;
+      authAlert.textContent = err.message;
       authAlert.classList.remove('hidden');
     } finally {
       btnConnect.disabled = false;
@@ -198,7 +234,7 @@ document.addEventListener('DOMContentLoaded', () => {
   async function disconnectCloudinary() {
     if (!confirm('Are you sure you want to disconnect your Cloudinary account?')) return;
     try {
-      await fetch('/api/cloudinary/disconnect', { method: 'POST' });
+      await safeFetchJson('/api/cloudinary/disconnect', { method: 'POST' });
       localStorage.removeItem('cld_cloud_name');
       localStorage.removeItem('cld_api_key');
       window.location.reload();
@@ -335,7 +371,8 @@ document.addEventListener('DOMContentLoaded', () => {
     formData.append('createSubfolders', subfolderToggle.checked ? 'true' : 'false');
 
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/upload-zip', true);
+    const uploadUrl = (apiBaseUrl ? apiBaseUrl : '') + '/api/upload-zip';
+    xhr.open('POST', uploadUrl, true);
 
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) {
@@ -384,7 +421,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function triggerProcess(jobId) {
     try {
-      await fetch(`/api/process/${jobId}`, { method: 'POST' });
+      await safeFetchJson(`/api/process/${jobId}`, { method: 'POST' });
     } catch (e) {
       console.error('Trigger process error', e);
     }
@@ -396,7 +433,8 @@ document.addEventListener('DOMContentLoaded', () => {
       activeEventSource.close();
     }
 
-    activeEventSource = new EventSource(`/api/progress/${jobId}`);
+    const sseUrl = (apiBaseUrl ? apiBaseUrl : '') + `/api/progress/${jobId}`;
+    activeEventSource = new EventSource(sseUrl);
 
     activeEventSource.addEventListener('init', (e) => {
       const data = JSON.parse(e.data);

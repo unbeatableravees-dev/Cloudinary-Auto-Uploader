@@ -1313,6 +1313,51 @@ input:checked + .slider:before {
   color: #fff;
 }
 
+/* Remote Notice Banner */
+.remote-notice-card {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  background: linear-gradient(135deg, rgba(6, 182, 212, 0.12), rgba(99, 102, 241, 0.12));
+  border: 1px solid rgba(6, 182, 212, 0.35);
+  border-radius: var(--radius-lg);
+  padding: 1rem 1.25rem;
+  font-size: 0.88rem;
+  color: #e2e8f0;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+  flex-wrap: wrap;
+}
+
+.remote-notice-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: rgba(6, 182, 212, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent-cyan);
+  flex-shrink: 0;
+}
+
+.remote-notice-body {
+  flex: 1;
+  min-width: 260px;
+  line-height: 1.45;
+}
+
+.remote-notice-body strong {
+  color: #fff;
+  margin-right: 4px;
+}
+
+.remote-notice-body .local-link {
+  color: var(--accent-cyan);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  text-decoration: underline;
+}
+
 /* About Section */
 .about-section-card {
   border-color: rgba(99, 102, 241, 0.2);
