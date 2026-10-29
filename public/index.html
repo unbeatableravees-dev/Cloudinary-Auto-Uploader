@@ -38,10 +38,10 @@
             <i data-lucide="log-out"></i>
           </button>
         </div>
-        <a href="#aboutSection" class="dev-header-pill" title="Learn About This Project">
+        <button type="button" id="btnOpenAboutModal" class="dev-header-pill" title="Learn About This Project">
           <span class="dev-avatar-mini"><i data-lucide="info"></i></span>
           <span>About</span>
-        </a>
+        </button>
         <a href="#developerCard" class="dev-header-pill" title="View Developer Details">
           <span class="dev-avatar-mini"><i data-lucide="code-2"></i></span>
           <span>Dev: <strong>Ravees</strong></span>
@@ -334,75 +334,78 @@
         </div>
       </section>
 
-      <!-- ABOUT SECTION -->
-      <section id="aboutSection" class="glass-card section-card about-section-card">
-        <div class="section-header">
-          <div class="step-badge active"><i data-lucide="info"></i> Overview</div>
-          <div class="section-title-wrap">
-            <h2>About Cloudinary Auto-Uploader</h2>
-            <p>High-volume multi-archive video ingestion engine with automated text-to-keyword extraction and Cloudinary cloud syncing.</p>
+    </main>
+
+    <!-- ABOUT POPUP MODAL (Opens on clicking "About" in header) -->
+    <div id="aboutModal" class="modal-backdrop hidden">
+      <div class="modal-dialog glass-card">
+        <div class="modal-header">
+          <div class="modal-title-wrap">
+            <span class="step-badge active"><i data-lucide="info"></i> Project Overview</span>
+            <h3>About Cloudinary Auto-Uploader</h3>
           </div>
+          <button type="button" class="btn-close-modal" id="btnCloseAboutModal" title="Close">
+            <i data-lucide="x"></i>
+          </button>
         </div>
 
-        <div class="about-lead">
-          <p>
+        <div class="modal-body">
+          <p class="about-lead">
             Managing and tagging hundreds of video assets manually is tedious, slow, and error-prone. 
             <strong>Cloudinary Auto-Uploader</strong> solves this by taking raw <code>.zip</code> archives containing videos alongside their descriptive <code>.txt</code> or <code>.json</code> notes, automatically parsing titles, descriptions, and hashtags, and streaming them directly into Cloudinary with rich metadata and searchable tags.
           </p>
+
+          <!-- 4 Key Pillars Grid -->
+          <div class="about-features-grid">
+            <div class="about-feature-box">
+              <div class="feature-icon-circle indigo">
+                <i data-lucide="archive"></i>
+              </div>
+              <h4>Multi-ZIP Batch Ingestion</h4>
+              <p>Upload hundreds of archives simultaneously up to 10GB. The system unpacks nested structures recursively without requiring pre-formatting.</p>
+            </div>
+
+            <div class="about-feature-box">
+              <div class="feature-icon-circle cyan">
+                <i data-lucide="file-search"></i>
+              </div>
+              <h4>Smart Metadata Pairing</h4>
+              <p>An intelligent heuristic algorithm matches videos with their neighboring text notes, extracting keyphrases, hashtags, and titles.</p>
+            </div>
+
+            <div class="about-feature-box">
+              <div class="feature-icon-circle emerald">
+                <i data-lucide="zap"></i>
+              </div>
+              <h4>Resilient Chunked Streaming</h4>
+              <p>Streams uploads via Cloudinary's native upload engine, ensuring even massive 4K video files upload reliably without network timeouts.</p>
+            </div>
+
+            <div class="about-feature-box">
+              <div class="feature-icon-circle violet">
+                <i data-lucide="tag"></i>
+              </div>
+              <h4>Contextual Metadata & Tags</h4>
+              <p>Extracted keywords are registered as tags, while titles and descriptions are indexed as searchable contextual metadata for Cloudinary player & search.</p>
+            </div>
+          </div>
+
+          <!-- Tech Stack Pill Row -->
+          <div class="about-tech-stack">
+            <span class="tech-stack-title">Built With:</span>
+            <div class="tech-pills">
+              <span class="tech-pill">Node.js</span>
+              <span class="tech-pill">Express.js</span>
+              <span class="tech-pill">Cloudinary API</span>
+              <span class="tech-pill">JSZip Engine</span>
+              <span class="tech-pill">Web Crypto SHA-1</span>
+              <span class="tech-pill">Firebase Hosting</span>
+              <span class="tech-pill">Lucide Icons</span>
+            </div>
+          </div>
         </div>
-
-        <!-- 4 Key Pillars Grid -->
-        <div class="about-features-grid">
-          <div class="about-feature-box">
-            <div class="feature-icon-circle indigo">
-              <i data-lucide="archive"></i>
-            </div>
-            <h4>Multi-ZIP Batch Processing</h4>
-            <p>Upload multiple archives simultaneously up to 10GB. The system unpacks nested directory structures recursively without requiring any pre-formatting.</p>
-          </div>
-
-          <div class="about-feature-box">
-            <div class="feature-icon-circle cyan">
-              <i data-lucide="file-search"></i>
-            </div>
-            <h4>Smart Metadata Pairing</h4>
-            <p>An intelligent heuristic algorithm matches videos with their neighboring text notes, extracting explicit keyphrases, social hashtags (<code>#tags</code>), or natural language keywords.</p>
-          </div>
-
-          <div class="about-feature-box">
-            <div class="feature-icon-circle emerald">
-              <i data-lucide="zap"></i>
-            </div>
-            <h4>Resilient Chunked Streaming</h4>
-            <p>Utilizes 10MB chunked streaming via Cloudinary's native upload engine, ensuring even massive 4K/60fps video files upload reliably without network timeouts.</p>
-          </div>
-
-          <div class="about-feature-box">
-            <div class="feature-icon-circle violet">
-              <i data-lucide="tag"></i>
-            </div>
-            <h4>Automatic Cloud Tagging</h4>
-            <p>Extracted keywords are registered directly as Cloudinary asset tags, while titles and descriptions are indexed as searchable context metadata.</p>
-          </div>
-        </div>
-
-        <!-- Tech Stack Pill Row -->
-        <div class="about-tech-stack">
-          <span class="tech-stack-title">Engineered With:</span>
-          <div class="tech-pills">
-            <span class="tech-pill">Node.js</span>
-            <span class="tech-pill">Express.js</span>
-            <span class="tech-pill">Cloudinary SDK</span>
-            <span class="tech-pill">Multer Streaming</span>
-            <span class="tech-pill">AdmZip</span>
-            <span class="tech-pill">Server-Sent Events (SSE)</span>
-            <span class="tech-pill">Firebase Hosting</span>
-            <span class="tech-pill">Lucide UI</span>
-          </div>
-        </div>
-      </section>
-
-    </main>
+      </div>
+    </div>
 
     <!-- Footer & Developer Profile -->
     <footer class="app-footer" id="developerCard">

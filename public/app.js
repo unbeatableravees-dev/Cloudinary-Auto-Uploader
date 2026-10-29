@@ -86,6 +86,42 @@ document.addEventListener('DOMContentLoaded', () => {
     'your', 'yours', 'yourself', 'yourselves', 'video', 'file', 'mp4', 'mkv', 'clip', 'shorts', 'youtube'
   ]);
 
+  // About Modal
+  const btnOpenAboutModal = document.getElementById('btnOpenAboutModal');
+  const btnCloseAboutModal = document.getElementById('btnCloseAboutModal');
+  const aboutModal = document.getElementById('aboutModal');
+
+  if (btnOpenAboutModal && aboutModal) {
+    btnOpenAboutModal.addEventListener('click', () => {
+      aboutModal.classList.remove('hidden');
+      document.body.style.overflow = 'hidden';
+      lucide.createIcons();
+    });
+  }
+
+  if (btnCloseAboutModal && aboutModal) {
+    btnCloseAboutModal.addEventListener('click', () => {
+      aboutModal.classList.add('hidden');
+      document.body.style.overflow = '';
+    });
+  }
+
+  if (aboutModal) {
+    aboutModal.addEventListener('click', (e) => {
+      if (e.target === aboutModal) {
+        aboutModal.classList.add('hidden');
+        document.body.style.overflow = '';
+      }
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !aboutModal.classList.contains('hidden')) {
+        aboutModal.classList.add('hidden');
+        document.body.style.overflow = '';
+      }
+    });
+  }
+
   // Initialize icons
   lucide.createIcons();
 
