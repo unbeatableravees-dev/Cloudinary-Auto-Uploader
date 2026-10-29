@@ -184,19 +184,12 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: 10 * 1024 * 1024 * 1024 }, // 10GB limit total
-  fileFilter: (req, file, cb) => {
-    if (path.extname(file.originalname).toLowerCase() !== '.zip') {
-      return cb(new Error('Sirf ZIP file upload karein (.zip only)'));
-    }
-    cb(null, true);
-  }
+  limits: { fileSize: 10 * 1024 * 1024 * 1024 } // 10GB limit total
 });
 
-// Step 1: Upload Multiple ZIPs
-app.post('/api/upload-zip', upload.array('zipFiles', 50), (req, res) => {
+// Step 1: Upload Multiple ZIPs (accepts any field name for maximum client compatibility)
+app.post('/api/upload-zip', upload.any(), (req, res) => {
   if (!activeCloudinaryConfig.isConfigured) {
-    // Delete files if not configured
     if (req.files && Array.isArray(req.files)) {
       req.files.forEach(f => {
         if (fs.existsSync(f.path)) fs.unlinkSync(f.path);
@@ -204,14 +197,21 @@ app.post('/api/upload-zip', upload.array('zipFiles', 50), (req, res) => {
     }
     return res.status(400).json({
       success: false,
-      error: 'Pehle Cloudinary account connect karein (Credentials required)'
+      error: 'Please connect your Cloudinary account first.'
     });
   }
 
-  const uploadedFiles = req.files || (req.file ? [req.file] : []);
+  // Filter only .zip files
+  const rawFiles = req.files || [];
+  const uploadedFiles = rawFiles.filter(f => f.originalname.toLowerCase().endsWith('.zip'));
+
+  // Cleanup any non-zip files uploaded accidentally
+  rawFiles.filter(f => !f.originalname.toLowerCase().endsWith('.zip')).forEach(f => {
+    if (fs.existsSync(f.path)) fs.unlinkSync(f.path);
+  });
 
   if (uploadedFiles.length === 0) {
-    return res.status(400).json({ success: false, error: 'Koi ZIP file select nahi hui.' });
+    return res.status(400).json({ success: false, error: 'No .zip archive was found in the upload.' });
   }
 
   const jobId = 'job_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
@@ -230,7 +230,7 @@ app.post('/api/upload-zip', upload.array('zipFiles', 50), (req, res) => {
     extractBaseDir: path.join(EXTRACTS_DIR, jobId),
     targetFolder,
     createSubfolders,
-    status: 'uploaded', // 'uploaded', 'extracting', 'analyzing', 'uploading', 'completed', 'failed'
+    status: 'uploaded',
     progressPercent: 0,
     totalZipCount: uploadedFiles.length,
     totalVideos: 0,
@@ -250,7 +250,7 @@ app.post('/api/upload-zip', upload.array('zipFiles', 50), (req, res) => {
     zipCount: uploadedFiles.length,
     totalSize,
     files: uploadedFiles.map(f => ({ name: f.originalname, size: f.size })),
-    message: `${uploadedFiles.length} ZIP files upload ho gayi. Processing shuru karne ke liye taiyaar hai.`
+    message: `${uploadedFiles.length} ZIP archive(s) uploaded successfully. Ready to process.`
   });
 });
 
@@ -519,6 +519,15 @@ function cleanupFiles(job) {
     console.warn('Cleanup error:', e.message);
   }
 }
+
+// Global Error Handler
+app.use((err, req, res, next) => {
+  console.error('Express Request Error:', err);
+  if (err instanceof multer.MulterError) {
+    return res.status(400).json({ success: false, error: `Upload error: ${err.message}` });
+  }
+  res.status(500).json({ success: false, error: err.message || 'Internal server error' });
+});
 
 // Start Server
 app.listen(PORT, () => {
