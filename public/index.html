@@ -304,7 +304,7 @@
           <div class="step-badge success">Step 4</div>
           <div class="section-title-wrap">
             <h2>Uploaded Videos & Keyword Results</h2>
-            <p>All extracted videos have been uploaded to Cloudinary with tags, keywords, titles, and metadata attached.</p>
+            <p>All extracted videos have been uploaded to Cloudinary with title, description, keywords, and contextual metadata.</p>
           </div>
           <div class="export-actions">
             <button class="btn-sm btn-outline" id="btnExportJson">
@@ -317,6 +317,16 @@
               <i data-lucide="plus"></i> New Batch
             </button>
           </div>
+        </div>
+
+        <!-- Live Search / Filter Bar -->
+        <div class="results-filter-bar">
+          <div class="filter-input-wrap">
+            <i data-lucide="search"></i>
+            <input type="text" id="filterResultsInput" placeholder="Filter uploaded videos by title, description, or keyword tag...">
+            <button type="button" class="btn-clear-filter hidden" id="btnClearFilter" title="Clear filter"><i data-lucide="x"></i></button>
+          </div>
+          <span class="filter-count-badge" id="filterCountBadge">Showing all videos</span>
         </div>
 
         <div class="results-grid" id="resultsGrid">

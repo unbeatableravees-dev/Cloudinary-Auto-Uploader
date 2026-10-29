@@ -56,6 +56,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // Results Section
   const resultsSection = document.getElementById('resultsSection');
   const resultsGrid = document.getElementById('resultsGrid');
+  const filterResultsInput = document.getElementById('filterResultsInput');
+  const btnClearFilter = document.getElementById('btnClearFilter');
+  const filterCountBadge = document.getElementById('filterCountBadge');
   const btnExportJson = document.getElementById('btnExportJson');
   const btnExportCsv = document.getElementById('btnExportCsv');
   const btnNewBatch = document.getElementById('btnNewBatch');
@@ -481,6 +484,31 @@ document.addEventListener('DOMContentLoaded', () => {
     };
   }
 
+  function cleanContextVal(str, maxLen = 800) {
+    if (!str) return '';
+    return String(str)
+      .replace(/[|=]/g, ' ')
+      .replace(/[\r\n\t]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .substring(0, maxLen);
+  }
+
+  function buildContextString(meta, zipName = '') {
+    const parts = [];
+    const cleanTitle = cleanContextVal(meta.title, 250);
+    const cleanDesc = cleanContextVal(meta.description, 800);
+    const cleanCaption = cleanContextVal(meta.caption, 250);
+    const cleanZip = cleanContextVal(zipName, 200);
+
+    if (cleanTitle) parts.push(`title=${cleanTitle}`);
+    if (cleanDesc) parts.push(`description=${cleanDesc}`);
+    if (cleanCaption && cleanCaption !== cleanTitle) parts.push(`caption=${cleanCaption}`);
+    if (cleanZip) parts.push(`source_zip=${cleanZip}`);
+
+    return parts.join('|');
+  }
+
   function getFileExt(filename) {
     const idx = filename.lastIndexOf('.');
     return idx === -1 ? '' : filename.substring(idx).toLowerCase();
@@ -643,8 +671,10 @@ document.addEventListener('DOMContentLoaded', () => {
         appendTerminalLog(nowTime(), `--> Uploading "${fileName}" to Cloudinary (Tags: [${metadata.tags.slice(0, 5).join(', ')}])...`, 'info');
 
         try {
-          // Prepare signed parameters
+          // Prepare signed parameters with Contextual Metadata
           const timestamp = Math.round(Date.now() / 1000);
+          const contextString = buildContextString(metadata, currentZipFile.name);
+
           const uploadParams = {
             folder: folderPath,
             public_id: cleanPublicId,
@@ -652,6 +682,9 @@ document.addEventListener('DOMContentLoaded', () => {
           };
           if (tagsString) {
             uploadParams.tags = tagsString;
+          }
+          if (contextString) {
+            uploadParams.context = contextString;
           }
 
           const signature = await generateSignature(uploadParams, apiSecret);
@@ -666,6 +699,9 @@ document.addEventListener('DOMContentLoaded', () => {
           uploadFormData.append('public_id', cleanPublicId);
           if (tagsString) {
             uploadFormData.append('tags', tagsString);
+          }
+          if (contextString) {
+            uploadFormData.append('context', contextString);
           }
 
           // Direct Cloudinary Upload via XHR
@@ -709,6 +745,7 @@ document.addEventListener('DOMContentLoaded', () => {
             duration: uploadResult.duration,
             tags: metadata.tags,
             title: metadata.title,
+            description: metadata.description,
             matchedText: matchedTextPath
           };
 
@@ -778,6 +815,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const formattedBytes = formatBytes(item.bytes || 0);
     const durationSec = item.duration ? `${Math.round(item.duration)}s` : '';
     const sourceZipLabel = item.sourceZip ? escapeHtml(item.sourceZip) : '';
+    const displayTitle = item.title || item.fileName;
+    const descSnippet = item.description ? escapeHtml(item.description) : '';
+
+    const searchBlob = `${displayTitle} ${item.description || ''} ${item.fileName || ''} ${(item.tags || []).join(' ')} ${item.sourceZip || ''}`.toLowerCase();
+    card.setAttribute('data-search', searchBlob);
 
     card.innerHTML = `
       <div class="result-video-wrap">
@@ -788,7 +830,8 @@ document.addEventListener('DOMContentLoaded', () => {
         </video>
       </div>
       <div class="result-body">
-        <div class="result-title" title="${escapeHtml(item.fileName)}">${escapeHtml(item.fileName)}</div>
+        <div class="result-title" title="${escapeHtml(displayTitle)}">${escapeHtml(displayTitle)}</div>
+        ${descSnippet ? `<div class="result-desc" title="${descSnippet}">${descSnippet}</div>` : ''}
         <div class="result-meta-row">
           <span><i data-lucide="hard-drive"></i> ${formattedBytes}</span>
           ${durationSec ? `<span><i data-lucide="clock"></i> ${durationSec}</span>` : ''}
@@ -811,6 +854,17 @@ document.addEventListener('DOMContentLoaded', () => {
     resultsGrid.appendChild(card);
     lucide.createIcons();
 
+    // Update filter count badge if active
+    if (filterCountBadge) {
+      const q = filterResultsInput ? filterResultsInput.value.trim().toLowerCase() : '';
+      if (q) {
+        applyResultsFilter(q);
+      } else {
+        const totalCards = resultsGrid.querySelectorAll('.result-card').length;
+        filterCountBadge.textContent = `Showing all ${totalCards} videos`;
+      }
+    }
+
     card.querySelector('.btn-copy-url').addEventListener('click', (e) => {
       const btn = e.currentTarget;
       const url = btn.getAttribute('data-url');
@@ -826,6 +880,47 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // Real-Time Results Filter by Title, Description & Tags
+  if (filterResultsInput) {
+    filterResultsInput.addEventListener('input', () => {
+      const q = filterResultsInput.value.trim().toLowerCase();
+      if (btnClearFilter) {
+        btnClearFilter.classList.toggle('hidden', !q);
+      }
+      applyResultsFilter(q);
+    });
+  }
+
+  if (btnClearFilter) {
+    btnClearFilter.addEventListener('click', () => {
+      filterResultsInput.value = '';
+      btnClearFilter.classList.add('hidden');
+      applyResultsFilter('');
+    });
+  }
+
+  function applyResultsFilter(query) {
+    const cards = resultsGrid.querySelectorAll('.result-card');
+    let matchCount = 0;
+    cards.forEach(card => {
+      const searchData = card.getAttribute('data-search') || '';
+      if (!query || searchData.includes(query)) {
+        card.style.display = '';
+        matchCount++;
+      } else {
+        card.style.display = 'none';
+      }
+    });
+
+    if (filterCountBadge) {
+      if (!query) {
+        filterCountBadge.textContent = `Showing all ${cards.length} videos`;
+      } else {
+        filterCountBadge.textContent = `Showing ${matchCount} of ${cards.length} videos`;
+      }
+    }
+  }
+
   // Export Results
   btnExportJson.addEventListener('click', () => {
     if (completedItems.length === 0) return alert('No results available to export.');
@@ -835,8 +930,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   btnExportCsv.addEventListener('click', () => {
     if (completedItems.length === 0) return alert('No results available to export.');
-    const headers = ['File Name', 'Source Archive', 'Cloudinary URL', 'Public ID', 'Keywords/Tags', 'Size (Bytes)', 'Duration (sec)', 'Matched Metadata File'];
+    const headers = ['Title', 'Description', 'File Name', 'Source Archive', 'Cloudinary URL', 'Public ID', 'Keywords/Tags', 'Size (Bytes)', 'Duration (sec)', 'Matched Metadata File'];
     const rows = completedItems.map(item => [
+      `"${(item.title || '').replace(/"/g, '""')}"`,
+      `"${(item.description || '').replace(/"/g, '""')}"`,
       `"${(item.fileName || '').replace(/"/g, '""')}"`,
       `"${(item.sourceZip || '').replace(/"/g, '""')}"`,
       `"${item.secure_url || ''}"`,
