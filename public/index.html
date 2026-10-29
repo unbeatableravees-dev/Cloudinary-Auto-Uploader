@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cloudinary Video & Metadata Auto-Uploader</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+  <div class="app-background">
+    <div class="glow-orb orb-1"></div>
+    <div class="glow-orb orb-2"></div>
+  </div>
+
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="logo-area">
+        <div class="logo-icon">
+          <i data-lucide="cloud-lightning"></i>
+        </div>
+        <div>
+          <h1>Cloudinary Auto-Uploader</h1>
+          <p class="subtitle">Multi-ZIP Video Extraction &bull; AI/TXT Keyword Tagging &bull; Cloudinary Streaming</p>
+        </div>
+      </div>
+      <div class="header-right-group">
+        <div class="header-status" id="headerStatusBadge">
+          <span class="status-dot offline"></span>
+          <span class="status-text" id="headerStatusText">Not Connected</span>
+          <button id="disconnectBtn" class="btn-sm btn-ghost hidden" title="Disconnect Account">
+            <i data-lucide="log-out"></i>
+          </button>
+        </div>
+        <a href="#developerCard" class="dev-header-pill" title="View Developer Details">
+          <span class="dev-avatar-mini"><i data-lucide="code-2"></i></span>
+          <span>Dev: <strong>Ravees</strong></span>
+        </a>
+      </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+      
+      <!-- SCREEN 1: CLOUDINARY AUTHENTICATION -->
+      <section id="authSection" class="glass-card section-card">
+        
+        <!-- Connected Summary Card (Visible when account is connected) -->
+        <div id="authConnectedCard" class="connected-summary-card hidden">
+          <div class="connected-info">
+            <div class="connected-indicator">
+              <span class="pulse-dot"></span>
+              <i data-lucide="shield-check"></i>
+            </div>
+            <div>
+              <div class="connected-label">Cloudinary Account Connected</div>
+              <div class="connected-cloud-name" id="connectedCloudNameDisplay">ggmd5noz</div>
+            </div>
+          </div>
+          <div class="connected-actions">
+            <button type="button" class="btn-sm btn-outline" id="btnToggleAuthForm">
+              <i data-lucide="settings-2"></i> Change Account
+            </button>
+          </div>
+        </div>
+
+        <!-- Auth Form (Hidden when already connected unless toggled) -->
+        <div id="authFormWrapper">
+          <div class="section-header">
+            <div class="step-badge">Step 1</div>
+            <div class="section-title-wrap">
+              <h2>Cloudinary Account & API Configuration</h2>
+              <p>Configure your Cloudinary credentials. Once connected, your videos will be uploaded directly to your cloud library.</p>
+            </div>
+          </div>
+
+          <form id="authForm" class="auth-form">
+            <div class="form-row">
+              <div class="form-group flex-1">
+                <label for="cloudName">
+                  <i data-lucide="cloud"></i> Cloud Name <span class="required">*</span>
+                </label>
+                <input type="text" id="cloudName" placeholder="e.g. my-cloud-name" required autocomplete="off">
+              </div>
+              <div class="form-group flex-1">
+                <label for="apiKey">
+                  <i data-lucide="key"></i> API Key <span class="required">*</span>
+                </label>
+                <input type="text" id="apiKey" placeholder="e.g. 123456789012345" required autocomplete="off">
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="apiSecret">
+                <i data-lucide="lock"></i> API Secret <span class="required">*</span>
+              </label>
+              <div class="password-wrapper">
+                <input type="password" id="apiSecret" placeholder="e.g. aBcDeFgHiJkLmNoPqRsTuVwXyZ" required autocomplete="off">
+                <button type="button" class="btn-toggle-pw" id="togglePwBtn" title="Show/Hide Secret">
+                  <i data-lucide="eye" id="pwEyeIcon"></i>
+                </button>
+              </div>
+            </div>
+
+            <!-- Quick Paste Option -->
+            <div class="quick-paste-box">
+              <details>
+                <summary>
+                  <i data-lucide="sparkles"></i> Or paste your <strong>CLOUDINARY_URL</strong> directly
+                </summary>
+                <div class="form-group mt-2">
+                  <input type="text" id="cloudinaryUrl" placeholder="cloudinary://api_key:api_secret@cloud_name">
+                  <span class="field-hint">Copy from Cloudinary Dashboard: all fields will automatically auto-fill.</span>
+                </div>
+              </details>
+            </div>
+
+            <!-- Help / Guide Banner -->
+            <div class="help-box">
+              <i data-lucide="info"></i>
+              <div>
+                <strong>Where to find these credentials?</strong>
+                <p>Log into <code>cloudinary.com</code>, navigate to <strong>Dashboard &gt; API Keys</strong> or <strong>Product Environment Credentials</strong> to copy your <strong>Cloud Name</strong>, <strong>API Key</strong>, and <strong>API Secret</strong>.</p>
+              </div>
+            </div>
+
+            <div class="auth-actions">
+              <button type="submit" id="btnConnect" class="btn btn-primary">
+                <i data-lucide="shield-check"></i>
+                <span>Connect & Verify Account</span>
+              </button>
+            </div>
+            <div id="authAlert" class="alert-message hidden"></div>
+          </form>
+        </div>
+      </section>
+
+      <!-- SCREEN 2: MULTI-ZIP UPLOAD & SETTINGS -->
+      <section id="uploadSection" class="glass-card section-card disabled-blur">
+        <div class="section-header">
+          <div class="step-badge">Step 2</div>
+          <div class="section-title-wrap">
+            <h2>Upload ZIP Archives</h2>
+            <p>Upload one or multiple <code>.zip</code> files containing your videos and <code>.txt</code> metadata. The system will extract files, analyze keywords, and stream uploads to Cloudinary.</p>
+          </div>
+        </div>
+
+        <div class="upload-workspace">
+          <!-- Dropzone -->
+          <div class="dropzone" id="dropzone">
+            <input type="file" id="zipFileInput" accept=".zip" multiple class="file-input-hidden">
+            
+            <div class="dropzone-content" id="dropzoneEmpty">
+              <div class="dropzone-icon">
+                <i data-lucide="archive"></i>
+              </div>
+              <h3>Drag & drop ZIP archives here</h3>
+              <p>or <span>browse your computer</span> (Single or Multiple ZIPs)</p>
+              <span class="file-badge">Supports up to 10GB total batch size &bull; High-res video formats supported</span>
+            </div>
+
+            <!-- Multi-Files Selected State -->
+            <div class="dropzone-content-selected hidden" id="dropzoneSelected">
+              <div class="selected-header">
+                <div class="selected-badge">
+                  <i data-lucide="layers"></i>
+                  <span id="selectedZipCount">0 ZIP files selected</span>
+                </div>
+                <span class="total-size-pill" id="selectedTotalSize">0 MB total</span>
+              </div>
+
+              <!-- List of selected files -->
+              <div class="zip-files-list" id="zipFilesList">
+                <!-- Dynamically populated -->
+              </div>
+
+              <div class="selected-actions">
+                <button type="button" class="btn-sm btn-outline" id="btnAddMoreZips">
+                  <i data-lucide="plus"></i> Add More ZIPs
+                </button>
+                <button type="button" class="btn-sm btn-ghost" id="btnClearAllZips">
+                  <i data-lucide="trash-2"></i> Clear All
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Upload Options -->
+          <div class="upload-options">
+            <div class="form-group">
+              <label for="folderName">
+                <i data-lucide="folder"></i> Destination Cloudinary Folder
+              </label>
+              <input type="text" id="folderName" value="zip_uploads" placeholder="e.g. video_library">
+              <span class="field-hint">Root folder in your Cloudinary Media Library.</span>
+            </div>
+
+            <!-- Subfolders Toggle -->
+            <div class="option-toggle">
+              <label class="switch">
+                <input type="checkbox" id="subfolderToggle" checked>
+                <span class="slider round"></span>
+              </label>
+              <div class="toggle-text">
+                <strong>Organize in Subfolders</strong>
+                <span>Creates a dedicated subfolder for each ZIP archive (e.g. <code>zip_uploads/archive_name/video.mp4</code>).</span>
+              </div>
+            </div>
+
+            <!-- Auto-Start Toggle -->
+            <div class="option-toggle">
+              <label class="switch">
+                <input type="checkbox" id="autoStartToggle" checked>
+                <span class="slider round"></span>
+              </label>
+              <div class="toggle-text">
+                <strong>Auto-Process on Upload</strong>
+                <span>Automatically begins extraction, keyword tagging, and Cloudinary uploads as soon as transfer finishes.</span>
+              </div>
+            </div>
+
+            <button type="button" id="btnStartUpload" class="btn btn-accent btn-lg" disabled>
+              <i data-lucide="upload-cloud"></i>
+              <span>Upload & Start Automation</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Upload Progress Bar (during HTTP transfer) -->
+        <div id="uploadProgressContainer" class="progress-wrap hidden">
+          <div class="progress-info">
+            <span id="uploadProgressLabel">Transferring ZIP archives to server...</span>
+            <span id="uploadProgressPercent">0%</span>
+          </div>
+          <div class="progress-bar-bg">
+            <div id="uploadProgressBar" class="progress-bar-fill" style="width: 0%"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 3: REAL-TIME PROCESSING & LOGS -->
+      <section id="processingSection" class="glass-card section-card hidden">
+        <div class="section-header">
+          <div class="step-badge active">Step 3</div>
+          <div class="section-title-wrap">
+            <h2>Real-Time Processing Pipeline</h2>
+            <p>Live progress tracking extraction, text metadata analysis, keyword extraction, and chunked Cloudinary uploads.</p>
+          </div>
+          <div class="job-status-pill" id="jobStatusBadge">Processing</div>
+        </div>
+
+        <!-- Main Progress Statistics -->
+        <div class="main-progress-card">
+          <div class="progress-header">
+            <div class="progress-stat">
+              <span class="stat-number" id="completedCount">0</span>
+              <span class="stat-label">Videos Uploaded</span>
+            </div>
+            <div class="progress-stat">
+              <span class="stat-number" id="totalCount">0</span>
+              <span class="stat-label">Total Videos Found</span>
+            </div>
+            <div class="progress-stat">
+              <span class="stat-number" id="failedCount">0</span>
+              <span class="stat-label">Failed</span>
+            </div>
+            <div class="overall-percent" id="overallPercent">0%</div>
+          </div>
+          <div class="progress-bar-bg main-bar">
+            <div id="pipelineProgressBar" class="progress-bar-fill animated" style="width: 0%"></div>
+          </div>
+        </div>
+
+        <!-- Live Terminal Activity Log -->
+        <div class="terminal-card">
+          <div class="terminal-header">
+            <div class="terminal-dots">
+              <span class="dot red"></span>
+              <span class="dot yellow"></span>
+              <span class="dot green"></span>
+            </div>
+            <span class="terminal-title">Live Activity Console</span>
+            <button class="btn-terminal-clear" id="clearLogsBtn" title="Clear console">Clear</button>
+          </div>
+          <div class="terminal-body" id="terminalLogs">
+            <div class="log-line text-muted">Ready to stream real-time pipeline events...</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 4: RESULTS GALLERY & EXPORT -->
+      <section id="resultsSection" class="glass-card section-card hidden">
+        <div class="section-header">
+          <div class="step-badge success">Step 4</div>
+          <div class="section-title-wrap">
+            <h2>Uploaded Videos & Keyword Results</h2>
+            <p>All extracted videos have been uploaded to Cloudinary with tags, keywords, titles, and metadata attached.</p>
+          </div>
+          <div class="export-actions">
+            <button class="btn-sm btn-outline" id="btnExportJson">
+              <i data-lucide="download"></i> Export JSON
+            </button>
+            <button class="btn-sm btn-outline" id="btnExportCsv">
+              <i data-lucide="file-spreadsheet"></i> Export CSV
+            </button>
+            <button class="btn-sm btn-primary" id="btnNewBatch">
+              <i data-lucide="plus"></i> New Batch
+            </button>
+          </div>
+        </div>
+
+        <div class="results-grid" id="resultsGrid">
+          <!-- Video Cards injected here dynamically -->
+        </div>
+      </section>
+
+    </main>
+
+    <!-- Footer & Developer Profile -->
+    <footer class="app-footer" id="developerCard">
+      <div class="developer-box glass-card">
+        <div class="dev-avatar">
+          <i data-lucide="terminal"></i>
+        </div>
+        <div class="dev-content">
+          <div class="dev-header-row">
+            <h3 class="dev-name">Developer Details & Connect</h3>
+            <span class="dev-badge"><i data-lucide="sparkles"></i> Created by Ravees</span>
+          </div>
+          <p class="dev-tagline">Automated Cloudinary Multi-ZIP Extraction, Natural Language Keyword Tagging & Video Streaming Pipeline.</p>
+          
+          <div class="social-links-grid">
+            <a href="https://instagram.com/bismil.writzz" target="_blank" rel="noopener noreferrer" class="social-pill instagram" title="Instagram: @bismil.writzz">
+              <i data-lucide="instagram"></i>
+              <div class="social-text">
+                <span class="social-label">Instagram</span>
+                <span class="social-val">@bismil.writzz</span>
+              </div>
+            </a>
+            <a href="mailto:ravees.kak@codestrix.in" class="social-pill email" title="Email: ravees.kak@codestrix.in">
+              <i data-lucide="mail"></i>
+              <div class="social-text">
+                <span class="social-label">Email</span>
+                <span class="social-val">ravees.kak@codestrix.in</span>
+              </div>
+            </a>
+            <a href="https://github.com/unbeatableravees" target="_blank" rel="noopener noreferrer" class="social-pill github" title="GitHub: unbeatableravees">
+              <i data-lucide="github"></i>
+              <div class="social-text">
+                <span class="social-label">GitHub</span>
+                <span class="social-val">unbeatableravees</span>
+              </div>
+            </a>
+            <a href="https://github.com/unbeatableravees-dev" target="_blank" rel="noopener noreferrer" class="social-pill github" title="GitHub Dev: unbeatableravees-dev">
+              <i data-lucide="github"></i>
+              <div class="social-text">
+                <span class="social-label">GitHub Dev</span>
+                <span class="social-val">unbeatableravees-dev</span>
+              </div>
+            </a>
+          </div>
+        </div>
+      </div>
+      <div class="footer-copyright">
+        <p>&copy; 2026 Cloudinary Multi-ZIP Video & Keyword Uploader &bull; Engineered with precision</p>
+      </div>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

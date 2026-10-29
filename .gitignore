@@ -1,0 +1,8 @@
+node_modules/
+.env
+temp_uploads/
+temp_extracted/
+*.log
+.DS_Store
+Thumbs.db
+.firebase/
