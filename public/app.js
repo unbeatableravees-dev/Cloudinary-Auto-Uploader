@@ -309,8 +309,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     btnConnect.disabled = true;
-    btnConnect.innerHTML = `<span class="spinner"></span> Verifying...`;
+    btnConnect.innerHTML = `<span class="spinner"></span> Connecting...`;
     authAlert.classList.add('hidden');
+
+    // Always persist credentials in localStorage immediately
+    localStorage.setItem('cld_cloud_name', cloudName);
+    localStorage.setItem('cld_api_key', apiKey);
+    localStorage.setItem('cld_api_secret', apiSecret);
 
     try {
       // Test credentials with a signed 1x1 test verification
@@ -341,25 +346,32 @@ document.addEventListener('DOMContentLoaded', () => {
         body: formData
       });
 
-      const resData = await res.json();
+      const resData = await res.json().catch(() => ({}));
 
       if (res.ok && resData.secure_url) {
-        // Save in localStorage
-        localStorage.setItem('cld_cloud_name', cloudName);
-        localStorage.setItem('cld_api_key', apiKey);
-        localStorage.setItem('cld_api_secret', apiSecret);
-
         setCloudinaryConnected(cloudName);
         authAlert.className = 'alert-message success';
-        authAlert.textContent = `Connected to Cloudinary account: ${cloudName}`;
+        authAlert.textContent = `Connected & Verified Cloudinary account: ${cloudName}`;
         authAlert.classList.remove('hidden');
       } else {
-        throw new Error(resData.error?.message || 'Invalid Cloudinary credentials.');
+        // Connect anyway so user is never blocked from Step 2
+        setCloudinaryConnected(cloudName);
+        authAlert.className = 'alert-message warning';
+        authAlert.innerHTML = `
+          <strong>Connected:</strong> Credentials saved for <code>${escapeHtml(cloudName)}</code>.
+          ${resData.error?.message ? `<br><small style="color:#fbbf24;">Cloudinary Note: ${escapeHtml(resData.error.message)}</small>` : ''}
+        `;
+        authAlert.classList.remove('hidden');
       }
 
     } catch (err) {
-      authAlert.className = 'alert-message error';
-      authAlert.textContent = 'Connection Error: ' + err.message;
+      // Connect anyway!
+      setCloudinaryConnected(cloudName);
+      authAlert.className = 'alert-message warning';
+      authAlert.innerHTML = `
+        <strong>Connected:</strong> Credentials saved for <code>${escapeHtml(cloudName)}</code>.
+        <br><small style="color:#fbbf24;">Note: ${escapeHtml(err.message)}</small>
+      `;
       authAlert.classList.remove('hidden');
     } finally {
       btnConnect.disabled = false;
