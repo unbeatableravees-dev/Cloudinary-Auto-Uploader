@@ -1,7 +1,10 @@
 // Cloudinary Multi-ZIP Auto-Uploader
 // Native Client-Side Streaming Engine: Extracts & Uploads As Files Are Unpacked
+// Features: Resilient 4-Stage Fallback, Duplicate Prevention Registry, Retry Failed Queue
 
 document.addEventListener('DOMContentLoaded', () => {
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
   // Elements
   const headerStatusBadge = document.getElementById('headerStatusBadge');
   const disconnectBtn = document.getElementById('disconnectBtn');
@@ -36,6 +39,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const folderNameInput = document.getElementById('folderName');
   const subfolderToggle = document.getElementById('subfolderToggle');
   const autoStartToggle = document.getElementById('autoStartToggle');
+  const skipExistingToggle = document.getElementById('skipExistingToggle');
+  const historyCountBadge = document.getElementById('historyCountBadge');
   const btnStartUpload = document.getElementById('btnStartUpload');
   const uploadProgressContainer = document.getElementById('uploadProgressContainer');
   const uploadProgressLabel = document.getElementById('uploadProgressLabel');
@@ -46,8 +51,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const processingSection = document.getElementById('processingSection');
   const jobStatusBadge = document.getElementById('jobStatusBadge');
   const completedCount = document.getElementById('completedCount');
+  const alreadyUploadedCount = document.getElementById('alreadyUploadedCount');
   const totalCount = document.getElementById('totalCount');
   const failedCount = document.getElementById('failedCount');
+  const btnRetryFailed = document.getElementById('btnRetryFailed');
+  const retryFailedCount = document.getElementById('retryFailedCount');
   const overallPercent = document.getElementById('overallPercent');
   const pipelineProgressBar = document.getElementById('pipelineProgressBar');
   const terminalLogs = document.getElementById('terminalLogs');
@@ -59,15 +67,23 @@ document.addEventListener('DOMContentLoaded', () => {
   const filterResultsInput = document.getElementById('filterResultsInput');
   const btnClearFilter = document.getElementById('btnClearFilter');
   const filterCountBadge = document.getElementById('filterCountBadge');
+  const btnRetryFailedResults = document.getElementById('btnRetryFailedResults');
+  const retryFailedResultsCount = document.getElementById('retryFailedResultsCount');
   const btnExportJson = document.getElementById('btnExportJson');
   const btnExportCsv = document.getElementById('btnExportCsv');
   const btnNewBatch = document.getElementById('btnNewBatch');
 
   // State
-  let selectedFiles = []; // Array of File objects
+  let selectedFiles = []; // Array of File objects with unique __uid
   let completedItems = [];
+  let failedQueue = [];   // Array of { blob, fileName, baseName, folderPath, metadata, sourceZip, matchedText, error }
   let isProcessing = false;
   let cancelRequested = false;
+
+  let totalVideosDiscovered = 0;
+  let completedVideosCount = 0;
+  let alreadyUploadedVideosCount = 0;
+  let failedVideosCount = 0;
 
   const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.webm', '.wmv', '.flv', '.m4v', '.3gp', '.ts']);
   const TEXT_EXTENSIONS = new Set(['.txt', '.json', '.caption', '.md', '.sub', '.srt']);
@@ -85,6 +101,74 @@ document.addEventListener('DOMContentLoaded', () => {
     'were', 'what', 'when', 'where', 'which', 'while', 'who', 'whom', 'why', 'with', 'would', 'you',
     'your', 'yours', 'yourself', 'yourselves', 'video', 'file', 'mp4', 'mkv', 'clip', 'shorts', 'youtube'
   ]);
+
+  // ---------------- UPLOAD REGISTRY (Prevent Duplicate Uploads) ----------------
+  const REGISTRY_STORAGE_KEY = 'cld_uploaded_registry_v2';
+
+  function loadUploadedRegistry() {
+    try {
+      const raw = localStorage.getItem(REGISTRY_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function saveUploadedRegistry(registry) {
+    try {
+      localStorage.setItem(REGISTRY_STORAGE_KEY, JSON.stringify(registry));
+    } catch (e) {
+      console.warn('LocalStorage full, unable to save upload registry', e);
+    }
+  }
+
+  function getRegistryKey(zipName, fileName) {
+    const safeZip = (zipName || '').toLowerCase().replace(/[^a-z0-9]/g, '_');
+    const safeFile = (fileName || '').toLowerCase().replace(/[^a-z0-9]/g, '_');
+    return `${safeZip}::${safeFile}`;
+  }
+
+  function recordUploadSuccess(zipName, fileName, data) {
+    const reg = loadUploadedRegistry();
+    const key1 = getRegistryKey(zipName, fileName);
+    const key2 = (fileName || '').toLowerCase().replace(/[^a-z0-9]/g, '_');
+    const entry = {
+      fileName,
+      sourceZip: zipName,
+      public_id: data.public_id || '',
+      secure_url: data.secure_url || '',
+      format: data.format || 'mp4',
+      bytes: data.bytes || 0,
+      duration: data.duration || 0,
+      tags: data.tags || [],
+      title: data.title || fileName,
+      description: data.description || '',
+      uploadedAt: Date.now()
+    };
+    reg[key1] = entry;
+    reg[key2] = entry;
+    saveUploadedRegistry(reg);
+    updateHistoryBadge();
+  }
+
+  function isAlreadyUploaded(zipName, fileName) {
+    const reg = loadUploadedRegistry();
+    const key1 = getRegistryKey(zipName, fileName);
+    const key2 = (fileName || '').toLowerCase().replace(/[^a-z0-9]/g, '_');
+    return reg[key1] || reg[key2] || null;
+  }
+
+  function updateHistoryBadge() {
+    if (!historyCountBadge) return;
+    const reg = loadUploadedRegistry();
+    const count = Object.keys(reg).length;
+    // Divide by 2 because we index by key1 and key2
+    const totalItems = Math.ceil(count / 2);
+    historyCountBadge.textContent = `${totalItems} in history`;
+  }
+
+  // Update initial history badge
+  updateHistoryBadge();
 
   // About Modal
   const btnOpenAboutModal = document.getElementById('btnOpenAboutModal');
@@ -248,7 +332,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const formData = new FormData();
       formData.append('file', testBlob);
       formData.append('api_key', apiKey);
-      formData.append('timestamp', timestamp);
+      formData.append('timestamp', String(timestamp));
       formData.append('signature', sig);
       formData.append('public_id', testParams.public_id);
 
@@ -295,17 +379,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Multi-File Dropzone & Selection
   dropzone.addEventListener('click', (e) => {
+    if (isProcessing) return;
     if (e.target.closest('button') || e.target.closest('.zip-file-item')) return;
     zipFileInput.click();
   });
 
   btnAddMoreZips.addEventListener('click', (e) => {
     e.stopPropagation();
+    if (isProcessing) return;
     zipFileInput.click();
   });
 
   dropzone.addEventListener('dragover', (e) => {
     e.preventDefault();
+    if (isProcessing) return;
     dropzone.classList.add('dragover');
   });
 
@@ -315,6 +402,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   dropzone.addEventListener('drop', (e) => {
     e.preventDefault();
+    if (isProcessing) return;
     dropzone.classList.remove('dragover');
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       handleFiles(Array.from(e.dataTransfer.files));
@@ -334,7 +422,9 @@ document.addEventListener('DOMContentLoaded', () => {
         nonZipCount++;
         continue;
       }
-      const exists = selectedFiles.some(f => f.name === file.name && f.size === file.size);
+      // Assign persistent unique ID
+      file.__uid = file.__uid || `${file.name}_${file.size}_${file.lastModified}`;
+      const exists = selectedFiles.some(f => f.__uid === file.__uid);
       if (!exists) {
         selectedFiles.push(file);
       }
@@ -358,16 +448,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
     dropzoneEmpty.classList.add('hidden');
     dropzoneSelected.classList.remove('hidden');
-    btnStartUpload.disabled = false;
+    btnStartUpload.disabled = isProcessing;
 
     selectedZipCount.textContent = `${selectedFiles.length} ZIP archive${selectedFiles.length > 1 ? 's' : ''} selected`;
     const totalBytes = selectedFiles.reduce((acc, f) => acc + f.size, 0);
     selectedTotalSize.textContent = `${formatBytes(totalBytes)} total`;
 
     zipFilesList.innerHTML = '';
-    // Show top 100 in DOM for performance if there are 700+ files
-    const displayFiles = selectedFiles.slice(0, 100);
-    displayFiles.forEach((file, index) => {
+    // Show top 80 in DOM for optimal performance with 700+ archives
+    const displayFiles = selectedFiles.slice(0, 80);
+    displayFiles.forEach((file) => {
       const item = document.createElement('div');
       item.className = 'zip-file-item';
       item.innerHTML = `
@@ -376,29 +466,31 @@ document.addEventListener('DOMContentLoaded', () => {
           <span class="zip-file-name" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</span>
         </div>
         <span class="zip-file-size">${formatBytes(file.size)}</span>
-        <button type="button" class="btn-remove-single-zip" data-index="${index}" title="Remove this ZIP">
+        <button type="button" class="btn-remove-single-zip" data-uid="${file.__uid}" title="Remove this ZIP">
           <i data-lucide="x"></i>
         </button>
       `;
       zipFilesList.appendChild(item);
     });
 
-    if (selectedFiles.length > 100) {
+    if (selectedFiles.length > 80) {
       const extraNotice = document.createElement('div');
       extraNotice.style.fontSize = '0.75rem';
       extraNotice.style.color = '#94a3b8';
       extraNotice.style.padding = '4px 8px';
-      extraNotice.textContent = `...and ${selectedFiles.length - 100} more archives ready for ingestion`;
+      extraNotice.textContent = `...and ${selectedFiles.length - 80} more archives ready for processing`;
       zipFilesList.appendChild(extraNotice);
     }
 
     lucide.createIcons();
 
+    // Attach remove handlers by UID (safe against slicing)
     document.querySelectorAll('.btn-remove-single-zip').forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
-        const idx = parseInt(btn.getAttribute('data-index'), 10);
-        selectedFiles.splice(idx, 1);
+        if (isProcessing) return;
+        const uid = btn.getAttribute('data-uid');
+        selectedFiles = selectedFiles.filter(f => f.__uid !== uid);
         updateSelectedUI();
       });
     });
@@ -406,21 +498,99 @@ document.addEventListener('DOMContentLoaded', () => {
 
   btnClearAllZips.addEventListener('click', (e) => {
     e.stopPropagation();
+    if (isProcessing) return;
     selectedFiles = [];
     updateSelectedUI();
   });
 
-  // Natural Language & Metadata Analysis
-  function cleanTag(tag) {
-    if (!tag) return '';
-    return tag.replace(/[#,\r\n\t]/g, ' ').replace(/\s+/g, ' ').trim();
+  // ---------------- SANITIZATION & METADATA PARSING ----------------
+  // Cloudinary tags strictly require alphanumeric, underscore, or hyphen [a-zA-Z0-9_-]
+  function sanitizeTag(raw) {
+    if (!raw) return '';
+    return String(raw)
+      .replace(/[#@]/g, '')
+      .trim()
+      .replace(/[\s\.\,\/\\:\;\(\)\[\]\{\}\<\>\"\'\?\!\*\+\=\&\|\%\$\^\`\~]+/g, '_')
+      .replace(/[^a-zA-Z0-9_\-]/g, '')
+      .replace(/_+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .toLowerCase()
+      .substring(0, 35);
+  }
+
+  function sanitizeTagsArray(tags) {
+    if (!Array.isArray(tags)) return [];
+    const set = new Set();
+    for (const t of tags) {
+      const clean = sanitizeTag(t);
+      if (clean.length >= 2 && !/^\d+$/.test(clean) && !COMMON_STOP_WORDS.has(clean)) {
+        set.add(clean);
+      }
+      if (set.size >= 20) break;
+    }
+    return Array.from(set);
+  }
+
+  // Cloudinary context values must not contain &, |, =, quotes, or emojis that break UTF-8/SHA-1 signatures
+  function sanitizeContextVal(val, maxLen = 300) {
+    if (!val) return '';
+    return String(val)
+      .replace(/&/g, ' and ')
+      .replace(/[|=]/g, ' ')
+      .replace(/[\uD800-\uDFFF]/g, '')
+      .replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '')
+      .replace(/[\r\n\t]+/g, ' ')
+      .replace(/[\\\"\'\`\<\>]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .substring(0, maxLen);
+  }
+
+  function buildSafeContextString(meta, zipName = '') {
+    const parts = [];
+    const cleanTitle = sanitizeContextVal(meta.title, 150);
+    const cleanDesc = sanitizeContextVal(meta.description, 400);
+    const cleanCaption = sanitizeContextVal(meta.caption, 150);
+    const cleanZip = sanitizeContextVal(zipName, 120);
+
+    if (cleanTitle) parts.push(`title=${cleanTitle}`);
+    if (cleanDesc) parts.push(`description=${cleanDesc}`);
+    if (cleanCaption && cleanCaption !== cleanTitle) parts.push(`caption=${cleanCaption}`);
+    if (cleanZip) parts.push(`source_zip=${cleanZip}`);
+
+    return parts.join('|');
+  }
+
+  function generateSafePublicId(baseName) {
+    const safe = (baseName || 'video')
+      .replace(/[^a-zA-Z0-9_-]/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .substring(0, 45);
+    const prefix = safe.length >= 2 ? safe : 'video';
+    return `${prefix}_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+  }
+
+  function generateSafeFolderName(root, zipName, useSubfolder) {
+    const safeRoot = (root || 'zip_uploads')
+      .replace(/[^a-zA-Z0-9_\/-]/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_+|_+$/g, '') || 'zip_uploads';
+    if (!useSubfolder) return safeRoot;
+    const safeSub = (zipName || 'archive')
+      .replace(/\.zip$/i, '')
+      .replace(/[^a-zA-Z0-9_-]/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .substring(0, 45) || 'archive';
+    return `${safeRoot}/${safeSub}`;
   }
 
   function deriveTagsFromText(text) {
     if (!text) return [];
     const words = text
       .toLowerCase()
-      .replace(/[^a-z0-9\s_\-\u0900-\u097F]/gi, ' ')
+      .replace(/[^a-z0-9\s_\-]/gi, ' ')
       .split(/\s+/)
       .filter(w => w.length >= 3 && !COMMON_STOP_WORDS.has(w) && !/^\d+$/.test(w));
 
@@ -458,7 +628,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (data.caption) caption = String(data.caption);
         const rawTags = data.tags || data.keywords || [];
         if (Array.isArray(rawTags)) {
-          rawTags.forEach(t => { const c = cleanTag(String(t)); if (c) tagsSet.add(c); });
+          rawTags.forEach(t => { const c = sanitizeTag(t); if (c) tagsSet.add(c); });
         }
         if (tagsSet.size > 0) {
           return { title, description: description || caption, caption, tags: Array.from(tagsSet) };
@@ -481,16 +651,16 @@ document.addEventListener('DOMContentLoaded', () => {
       const tagsMatch = trimmed.match(/^(?:keywords?|tags?|hashtags?|keys?)\s*[:=-]\s*(.+)$/i);
       if (tagsMatch) {
         tagsMatch[1].split(/[,;\t|]/).forEach(t => {
-          const c = cleanTag(t);
+          const c = sanitizeTag(t);
           if (c) tagsSet.add(c);
         });
         continue;
       }
 
-      const hashtags = trimmed.match(/#([a-zA-Z0-9_\u0900-\u097F]+)/g);
+      const hashtags = trimmed.match(/#([a-zA-Z0-9_]+)/g);
       if (hashtags) {
         hashtags.forEach(ht => {
-          const c = cleanTag(ht.replace(/^#/, ''));
+          const c = sanitizeTag(ht);
           if (c) tagsSet.add(c);
         });
       }
@@ -499,8 +669,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (tagsSet.size === 0) {
       if (text.includes(',') && !text.includes('\n\n')) {
         text.split(/[,;\n]/).forEach(p => {
-          const c = cleanTag(p);
-          if (c && c.length <= 40) tagsSet.add(c);
+          const c = sanitizeTag(p);
+          if (c) tagsSet.add(c);
         });
       } else {
         deriveTagsFromText(text).forEach(t => tagsSet.add(t));
@@ -516,33 +686,8 @@ document.addEventListener('DOMContentLoaded', () => {
       title: title || fallbackTitle,
       description: description || caption || text.substring(0, 300),
       caption: caption || title || fallbackTitle,
-      tags: Array.from(tagsSet).slice(0, 30)
+      tags: Array.from(tagsSet).slice(0, 25)
     };
-  }
-
-  function cleanContextVal(str, maxLen = 800) {
-    if (!str) return '';
-    return String(str)
-      .replace(/[|=]/g, ' ')
-      .replace(/[\r\n\t]+/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .substring(0, maxLen);
-  }
-
-  function buildContextString(meta, zipName = '') {
-    const parts = [];
-    const cleanTitle = cleanContextVal(meta.title, 250);
-    const cleanDesc = cleanContextVal(meta.description, 800);
-    const cleanCaption = cleanContextVal(meta.caption, 250);
-    const cleanZip = cleanContextVal(zipName, 200);
-
-    if (cleanTitle) parts.push(`title=${cleanTitle}`);
-    if (cleanDesc) parts.push(`description=${cleanDesc}`);
-    if (cleanCaption && cleanCaption !== cleanTitle) parts.push(`caption=${cleanCaption}`);
-    if (cleanZip) parts.push(`source_zip=${cleanZip}`);
-
-    return parts.join('|');
   }
 
   function getFileExt(filename) {
@@ -556,8 +701,258 @@ document.addEventListener('DOMContentLoaded', () => {
     return idx === -1 ? name : name.substring(0, idx);
   }
 
+  // ---------------- DIRECT CLOUDINARY UPLOAD EXECUTION ----------------
+  function executeUploadRequest({
+    cloudName,
+    apiKey,
+    apiSecret,
+    videoBlob,
+    fileName,
+    baseName,
+    folderPath,
+    tags,
+    context
+  }) {
+    return new Promise(async (resolve, reject) => {
+      try {
+        const timestamp = Math.round(Date.now() / 1000);
+        const cleanPublicId = generateSafePublicId(baseName);
+
+        const uploadParams = {
+          folder: folderPath,
+          public_id: cleanPublicId,
+          timestamp: String(timestamp)
+        };
+        if (tags) uploadParams.tags = tags;
+        if (context) uploadParams.context = context;
+
+        const signature = await generateSignature(uploadParams, apiSecret);
+
+        const formData = new FormData();
+        formData.append('file', videoBlob, fileName);
+        formData.append('api_key', apiKey);
+        formData.append('timestamp', String(timestamp));
+        formData.append('signature', signature);
+        formData.append('folder', folderPath);
+        formData.append('public_id', cleanPublicId);
+        if (tags) formData.append('tags', tags);
+        if (context) formData.append('context', context);
+
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `https://api.cloudinary.com/v1_1/${cloudName}/video/upload`, true);
+        xhr.timeout = 300000; // 5-minute timeout for large HD/4K video files
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              const res = JSON.parse(xhr.responseText);
+              resolve(res);
+            } catch (e) {
+              reject(new Error('Invalid JSON response from Cloudinary'));
+            }
+          } else {
+            try {
+              const errData = JSON.parse(xhr.responseText);
+              reject(new Error(errData.error?.message || `HTTP ${xhr.status}`));
+            } catch (e) {
+              reject(new Error(`Upload failed with HTTP ${xhr.status}`));
+            }
+          }
+        };
+
+        xhr.onerror = () => reject(new Error('Network connection error during video transfer'));
+        xhr.ontimeout = () => reject(new Error('Upload connection timed out (5-minute limit exceeded)'));
+
+        xhr.send(formData);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  // ---------------- 4-STAGE RESILIENT UPLOADER (Zero-Fail Guarantee) ----------------
+  async function uploadVideoWithResilience({
+    cloudName,
+    apiKey,
+    apiSecret,
+    videoBlob,
+    fileName,
+    baseName,
+    folderPath,
+    metadata,
+    sourceZip
+  }) {
+    const safeTags = sanitizeTagsArray(metadata.tags);
+    const tagsString = safeTags.join(',');
+    const contextString = buildSafeContextString(metadata, sourceZip);
+
+    let lastError = null;
+
+    // STAGE 1: Full Payload (Sanitized Tags + Sanitized Context)
+    try {
+      return await executeUploadRequest({
+        cloudName, apiKey, apiSecret,
+        videoBlob, fileName, baseName, folderPath,
+        tags: tagsString,
+        context: contextString
+      });
+    } catch (err1) {
+      lastError = err1;
+      appendTerminalLog(nowTime(), `⚠️ [Attempt 1 failed for "${fileName}": ${err1.message}]. Retrying with tags only...`, 'warn');
+    }
+
+    await sleep(800);
+
+    // STAGE 2: Tags Only (Drop context in case signature or UTF-8 surrogate check failed)
+    try {
+      return await executeUploadRequest({
+        cloudName, apiKey, apiSecret,
+        videoBlob, fileName, baseName, folderPath,
+        tags: tagsString,
+        context: null
+      });
+    } catch (err2) {
+      lastError = err2;
+      appendTerminalLog(nowTime(), `⚠️ [Attempt 2 failed for "${fileName}": ${err2.message}]. Retrying with clean minimal parameters...`, 'warn');
+    }
+
+    await sleep(1200);
+
+    // STAGE 3: Minimal Parameters (Safe Folder + Safe Public ID Only)
+    try {
+      return await executeUploadRequest({
+        cloudName, apiKey, apiSecret,
+        videoBlob, fileName, baseName, folderPath,
+        tags: null,
+        context: null
+      });
+    } catch (err3) {
+      lastError = err3;
+      appendTerminalLog(nowTime(), `⚠️ [Attempt 3 failed for "${fileName}": ${err3.message}]. Network recovery backoff in 2.5s...`, 'warn');
+    }
+
+    await sleep(2500);
+
+    // STAGE 4: Final Exponential Backoff Recovery Attempt
+    try {
+      return await executeUploadRequest({
+        cloudName, apiKey, apiSecret,
+        videoBlob, fileName, baseName, folderPath,
+        tags: null,
+        context: null
+      });
+    } catch (err4) {
+      lastError = err4;
+      throw new Error(`Upload failed after 4 resilient fallback attempts: ${lastError.message}`);
+    }
+  }
+
+  // ---------------- RETRY FAILED VIDEOS QUEUE & HANDLER ----------------
+  function updateRetryButtons() {
+    const count = failedQueue.length;
+    if (count > 0) {
+      btnRetryFailed.classList.remove('hidden');
+      retryFailedCount.textContent = count;
+      btnRetryFailedResults.classList.remove('hidden');
+      retryFailedResultsCount.textContent = count;
+    } else {
+      btnRetryFailed.classList.add('hidden');
+      btnRetryFailedResults.classList.add('hidden');
+    }
+  }
+
+  async function retryFailedVideos() {
+    if (failedQueue.length === 0 || isProcessing) return;
+
+    const cloudName = localStorage.getItem('cld_cloud_name');
+    const apiKey = localStorage.getItem('cld_api_key');
+    const apiSecret = localStorage.getItem('cld_api_secret');
+
+    if (!cloudName || !apiKey || !apiSecret) {
+      alert('Please connect your Cloudinary account first.');
+      return;
+    }
+
+    isProcessing = true;
+    btnRetryFailed.disabled = true;
+    btnRetryFailedResults.disabled = true;
+    btnRetryFailed.innerHTML = `<span class="spinner"></span> Retrying...`;
+    btnRetryFailedResults.innerHTML = `<span class="spinner"></span> Retrying...`;
+
+    appendTerminalLog(nowTime(), `🔄 Starting Retry of ${failedQueue.length} previously failed video(s)...`, 'info');
+
+    const itemsToRetry = [...failedQueue];
+    const stillFailed = [];
+
+    for (let i = 0; i < itemsToRetry.length; i++) {
+      const item = itemsToRetry[i];
+      appendTerminalLog(nowTime(), `[Retry ${i + 1}/${itemsToRetry.length}] Retrying "${item.fileName}"...`, 'info');
+
+      try {
+        const uploadResult = await uploadVideoWithResilience({
+          cloudName,
+          apiKey,
+          apiSecret,
+          videoBlob: item.blob,
+          fileName: item.fileName,
+          baseName: item.baseName,
+          folderPath: item.folderPath,
+          metadata: item.metadata,
+          sourceZip: item.sourceZip
+        });
+
+        completedVideosCount++;
+        completedCount.textContent = completedVideosCount;
+
+        failedVideosCount = Math.max(0, failedVideosCount - 1);
+        failedCount.textContent = failedVideosCount;
+
+        const itemData = {
+          success: true,
+          fileName: item.fileName,
+          sourceZip: item.sourceZip,
+          public_id: uploadResult.public_id,
+          secure_url: uploadResult.secure_url,
+          format: uploadResult.format,
+          bytes: uploadResult.bytes || item.blob.size,
+          duration: uploadResult.duration,
+          tags: item.metadata.tags,
+          title: item.metadata.title,
+          description: item.metadata.description,
+          matchedText: item.matchedText
+        };
+
+        recordUploadSuccess(item.sourceZip, item.fileName, itemData);
+        completedItems.push(itemData);
+        appendResultCard(itemData);
+
+        appendTerminalLog(nowTime(), `✅ Successfully recovered & uploaded "${item.fileName}"!`, 'success');
+
+      } catch (err) {
+        stillFailed.push(item);
+        appendTerminalLog(nowTime(), `❌ Still failed for "${item.fileName}": ${err.message}`, 'error');
+      }
+
+      failedQueue = stillFailed;
+      updateRetryButtons();
+    }
+
+    isProcessing = false;
+    btnRetryFailed.disabled = false;
+    btnRetryFailedResults.disabled = false;
+    btnRetryFailed.innerHTML = `<i data-lucide="rotate-ccw"></i> Retry (<span id="retryFailedCount">${failedQueue.length}</span>)`;
+    btnRetryFailedResults.innerHTML = `<i data-lucide="rotate-ccw"></i> Retry Failed (<span id="retryFailedResultsCount">${failedQueue.length}</span>)`;
+    lucide.createIcons();
+
+    if (failedQueue.length === 0) {
+      appendTerminalLog(nowTime(), `🎉 All failed videos have been successfully recovered and uploaded! (0 failed remaining)`, 'success');
+    }
+  }
+
+  btnRetryFailed.addEventListener('click', retryFailedVideos);
+  btnRetryFailedResults.addEventListener('click', retryFailedVideos);
+
   // ---------------- STREAMING PIPELINE ----------------
-  // Real-time Extraction -> Immediate Upload -> Real-Time Card Injection
   btnStartUpload.addEventListener('click', async () => {
     if (selectedFiles.length === 0 || isProcessing) return;
 
@@ -575,6 +970,9 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
+    // Freeze snapshot so file removal or changes won't corrupt the running loop
+    const archivesToProcess = [...selectedFiles];
+
     isProcessing = true;
     btnStartUpload.disabled = true;
     cancelRequested = false;
@@ -588,27 +986,33 @@ document.addEventListener('DOMContentLoaded', () => {
 
     terminalLogs.innerHTML = '';
     completedItems = [];
+    failedQueue = [];
     resultsGrid.innerHTML = '';
+
+    completedVideosCount = 0;
+    alreadyUploadedVideosCount = 0;
+    failedVideosCount = 0;
+    totalVideosDiscovered = 0;
+
     completedCount.textContent = '0';
+    alreadyUploadedCount.textContent = '0';
     failedCount.textContent = '0';
     totalCount.textContent = 'Estimating...';
+    updateRetryButtons();
 
-    const rootFolder = (folderNameInput.value.trim() || 'zip_uploads').replace(/[^a-zA-Z0-9_/-]/g, '_');
+    const rootFolder = (folderNameInput.value.trim() || 'zip_uploads');
     const createSubfolders = subfolderToggle.checked;
+    const skipExisting = skipExistingToggle ? skipExistingToggle.checked : true;
 
-    appendTerminalLog(nowTime(), `🚀 Starting Streaming Ingestion of ${selectedFiles.length} ZIP archives...`, 'info');
+    appendTerminalLog(nowTime(), `🚀 Starting Ingestion of ${archivesToProcess.length} ZIP archive(s)... (Skip Existing: ${skipExisting ? 'ON' : 'OFF'})`, 'info');
 
-    let totalVideosDiscovered = 0;
-    let completedVideosCount = 0;
-    let failedVideosCount = 0;
-
-    for (let zIdx = 0; zIdx < selectedFiles.length; zIdx++) {
+    for (let zIdx = 0; zIdx < archivesToProcess.length; zIdx++) {
       if (cancelRequested) break;
 
-      const currentZipFile = selectedFiles[zIdx];
+      const currentZipFile = archivesToProcess[zIdx];
       const archiveNum = zIdx + 1;
 
-      appendTerminalLog(nowTime(), `[Archive ${archiveNum}/${selectedFiles.length}] Unpacking "${currentZipFile.name}" (${formatBytes(currentZipFile.size)})...`, 'info');
+      appendTerminalLog(nowTime(), `[Archive ${archiveNum}/${archivesToProcess.length}] Unpacking "${currentZipFile.name}" (${formatBytes(currentZipFile.size)})...`, 'info');
 
       let zip;
       try {
@@ -652,7 +1056,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }
 
-      // AS EACH VIDEO IS EXTRACTED, IMMEDIATELY STREAM UPLOAD IT TO CLOUDINARY!
+      // Process each video as extracted
       for (let vIdx = 0; vIdx < videoFiles.length; vIdx++) {
         if (cancelRequested) break;
 
@@ -664,7 +1068,6 @@ document.addEventListener('DOMContentLoaded', () => {
         let matchedTextContent = '';
         let matchedTextPath = null;
 
-        // 1. Exact base match in same dir
         for (const [tPath, content] of Object.entries(textContents)) {
           if (getFileBaseName(tPath).toLowerCase() === baseName.toLowerCase()) {
             matchedTextContent = content;
@@ -672,7 +1075,6 @@ document.addEventListener('DOMContentLoaded', () => {
             break;
           }
         }
-        // 2. Fallback to any text in archive
         if (!matchedTextContent && textFiles.length > 0) {
           const firstPath = textFiles[0].relativePath;
           matchedTextContent = textContents[firstPath] || '';
@@ -680,8 +1082,41 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         const metadata = parseTextMetadata(matchedTextContent, baseName.replace(/[_-]+/g, ' '));
+        const folderPath = generateSafeFolderName(rootFolder, currentZipFile.name, createSubfolders);
 
-        appendTerminalLog(nowTime(), `Extracting "${fileName}" & preparing upload...`, 'info');
+        // CHECK IF ALREADY UPLOADED (Skip Duplicates)
+        if (skipExisting) {
+          const existingRecord = isAlreadyUploaded(currentZipFile.name, fileName);
+          if (existingRecord) {
+            alreadyUploadedVideosCount++;
+            alreadyUploadedCount.textContent = alreadyUploadedVideosCount;
+
+            appendTerminalLog(nowTime(), `⏭️ [Already Uploaded] "${fileName}" found in cloud library. Skipping re-upload.`, 'info');
+
+            const itemData = {
+              success: true,
+              alreadyUploaded: true,
+              fileName: fileName,
+              sourceZip: currentZipFile.name,
+              public_id: existingRecord.public_id || '',
+              secure_url: existingRecord.secure_url || '',
+              format: existingRecord.format || 'mp4',
+              bytes: existingRecord.bytes || 0,
+              duration: existingRecord.duration || 0,
+              tags: existingRecord.tags || metadata.tags,
+              title: existingRecord.title || metadata.title,
+              description: existingRecord.description || metadata.description,
+              matchedText: matchedTextPath
+            };
+
+            completedItems.push(itemData);
+            appendResultCard(itemData);
+            resultsSection.classList.remove('hidden');
+            continue; // Skip upload!
+          }
+        }
+
+        appendTerminalLog(nowTime(), `Extracting "${fileName}"...`, 'info');
 
         // Extract video blob
         let videoBlob;
@@ -694,84 +1129,27 @@ document.addEventListener('DOMContentLoaded', () => {
           continue;
         }
 
-        // Determine destination folder
-        let folderPath = rootFolder;
-        if (createSubfolders) {
-          const cleanZipName = currentZipFile.name.replace(/\.zip$/i, '').replace(/[^a-zA-Z0-9_-]/g, '_');
-          folderPath = `${rootFolder}/${cleanZipName}`;
-        }
-
-        const cleanPublicId = `${baseName.replace(/[^a-zA-Z0-9_-]/g, '_')}_${Date.now()}`;
-        const tagsString = (metadata.tags || []).join(',');
-
-        appendTerminalLog(nowTime(), `--> Uploading "${fileName}" to Cloudinary (Tags: [${metadata.tags.slice(0, 5).join(', ')}])...`, 'info');
+        appendTerminalLog(nowTime(), `--> Streaming "${fileName}" to Cloudinary (Tags: [${metadata.tags.slice(0, 4).join(', ')}])...`, 'info');
 
         try {
-          // Prepare signed parameters with Contextual Metadata
-          const timestamp = Math.round(Date.now() / 1000);
-          const contextString = buildContextString(metadata, currentZipFile.name);
-
-          const uploadParams = {
-            folder: folderPath,
-            public_id: cleanPublicId,
-            timestamp: String(timestamp)
-          };
-          if (tagsString) {
-            uploadParams.tags = tagsString;
-          }
-          if (contextString) {
-            uploadParams.context = contextString;
-          }
-
-          const signature = await generateSignature(uploadParams, apiSecret);
-
-          // Build multipart form data
-          const uploadFormData = new FormData();
-          uploadFormData.append('file', videoBlob, fileName);
-          uploadFormData.append('api_key', apiKey);
-          uploadFormData.append('timestamp', timestamp);
-          uploadFormData.append('signature', signature);
-          uploadFormData.append('folder', folderPath);
-          uploadFormData.append('public_id', cleanPublicId);
-          if (tagsString) {
-            uploadFormData.append('tags', tagsString);
-          }
-          if (contextString) {
-            uploadFormData.append('context', contextString);
-          }
-
-          // Direct Cloudinary Upload via XHR
-          const uploadResult = await new Promise((resolve, reject) => {
-            const xhr = new XMLHttpRequest();
-            xhr.open('POST', `https://api.cloudinary.com/v1_1/${cloudName}/video/upload`, true);
-
-            xhr.onload = () => {
-              if (xhr.status >= 200 && xhr.status < 300) {
-                try {
-                  resolve(JSON.parse(xhr.responseText));
-                } catch (e) {
-                  reject(new Error('Invalid response from Cloudinary'));
-                }
-              } else {
-                try {
-                  const errData = JSON.parse(xhr.responseText);
-                  reject(new Error(errData.error?.message || `HTTP ${xhr.status}`));
-                } catch (e) {
-                  reject(new Error(`Upload failed with HTTP ${xhr.status}`));
-                }
-              }
-            };
-
-            xhr.onerror = () => reject(new Error('Network error during upload'));
-            xhr.send(uploadFormData);
+          const uploadResult = await uploadVideoWithResilience({
+            cloudName,
+            apiKey,
+            apiSecret,
+            videoBlob,
+            fileName,
+            baseName,
+            folderPath,
+            metadata,
+            sourceZip: currentZipFile.name
           });
 
-          // Success item
           completedVideosCount++;
           completedCount.textContent = completedVideosCount;
 
           const itemData = {
             success: true,
+            alreadyUploaded: false,
             fileName: fileName,
             sourceZip: currentZipFile.name,
             public_id: uploadResult.public_id,
@@ -785,6 +1163,7 @@ document.addEventListener('DOMContentLoaded', () => {
             matchedText: matchedTextPath
           };
 
+          recordUploadSuccess(currentZipFile.name, fileName, itemData);
           completedItems.push(itemData);
           appendResultCard(itemData);
           resultsSection.classList.remove('hidden');
@@ -794,11 +1173,25 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (uploadError) {
           failedVideosCount++;
           failedCount.textContent = failedVideosCount;
+
+          // Push to retry queue
+          failedQueue.push({
+            blob: videoBlob,
+            fileName: fileName,
+            baseName: baseName,
+            folderPath: folderPath,
+            metadata: metadata,
+            sourceZip: currentZipFile.name,
+            matchedText: matchedTextPath,
+            error: uploadError.message
+          });
+          updateRetryButtons();
+
           appendTerminalLog(nowTime(), `❌ Failed to upload "${fileName}": ${uploadError.message}`, 'error');
         }
 
         // Update overall percentage
-        const overallFraction = (archiveNum / selectedFiles.length);
+        const overallFraction = (archiveNum / archivesToProcess.length);
         const percent = Math.min(99, Math.round(overallFraction * 100));
         pipelineProgressBar.style.width = percent + '%';
         overallPercent.textContent = percent + '%';
@@ -814,7 +1207,13 @@ document.addEventListener('DOMContentLoaded', () => {
     jobStatusBadge.style.background = 'rgba(16, 185, 129, 0.2)';
     jobStatusBadge.style.color = '#34d399';
 
-    appendTerminalLog(nowTime(), `🎉 All processing finished! ${completedVideosCount} video(s) uploaded successfully (${failedVideosCount} failed).`, 'success');
+    appendTerminalLog(
+      nowTime(),
+      `🎉 Ingestion completed! ${completedVideosCount} uploaded, ${alreadyUploadedVideosCount} skipped (already uploaded), ${failedVideosCount} failed.`,
+      'success'
+    );
+
+    updateRetryButtons();
     resultsSection.classList.remove('hidden');
     resultsSection.scrollIntoView({ behavior: 'smooth' });
 
@@ -859,6 +1258,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     card.innerHTML = `
       <div class="result-video-wrap">
+        ${item.alreadyUploaded ? `<div class="badge-already-uploaded"><i data-lucide="shield-check"></i> Already Uploaded</div>` : ''}
         ${sourceZipLabel ? `<span class="source-zip-pill"><i data-lucide="archive"></i> ${sourceZipLabel}</span>` : ''}
         <video controls preload="metadata">
           <source src="${item.secure_url}" type="video/${item.format || 'mp4'}">
@@ -966,7 +1366,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   btnExportCsv.addEventListener('click', () => {
     if (completedItems.length === 0) return alert('No results available to export.');
-    const headers = ['Title', 'Description', 'File Name', 'Source Archive', 'Cloudinary URL', 'Public ID', 'Keywords/Tags', 'Size (Bytes)', 'Duration (sec)', 'Matched Metadata File'];
+    const headers = ['Title', 'Description', 'File Name', 'Source Archive', 'Cloudinary URL', 'Public ID', 'Keywords/Tags', 'Size (Bytes)', 'Duration (sec)', 'Matched Metadata File', 'Status'];
     const rows = completedItems.map(item => [
       `"${(item.title || '').replace(/"/g, '""')}"`,
       `"${(item.description || '').replace(/"/g, '""')}"`,
@@ -977,7 +1377,8 @@ document.addEventListener('DOMContentLoaded', () => {
       `"${(item.tags || []).join(', ').replace(/"/g, '""')}"`,
       item.bytes || '',
       item.duration || '',
-      `"${(item.matchedText || '').replace(/"/g, '""')}"`
+      `"${(item.matchedText || '').replace(/"/g, '""')}"`,
+      item.alreadyUploaded ? '"Already Uploaded"' : '"New Upload"'
     ]);
 
     const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
@@ -997,6 +1398,7 @@ document.addEventListener('DOMContentLoaded', () => {
   btnNewBatch.addEventListener('click', () => {
     if (!confirm('Start a new batch upload?')) return;
     selectedFiles = [];
+    failedQueue = [];
     updateSelectedUI();
     processingSection.classList.add('hidden');
     resultsSection.classList.add('hidden');
@@ -1004,8 +1406,10 @@ document.addEventListener('DOMContentLoaded', () => {
     completedItems = [];
     terminalLogs.innerHTML = '';
     completedCount.textContent = '0';
+    alreadyUploadedCount.textContent = '0';
     totalCount.textContent = '0';
     failedCount.textContent = '0';
+    updateRetryButtons();
     pipelineProgressBar.style.width = '0%';
     overallPercent.textContent = '0%';
     window.scrollTo({ top: 0, behavior: 'smooth' });

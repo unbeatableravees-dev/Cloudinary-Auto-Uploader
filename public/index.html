@@ -217,6 +217,21 @@
               </div>
             </div>
 
+            <!-- Skip Already Uploaded Toggle -->
+            <div class="option-toggle">
+              <label class="switch">
+                <input type="checkbox" id="skipExistingToggle" checked>
+                <span class="slider round"></span>
+              </label>
+              <div class="toggle-text">
+                <div class="toggle-title-row">
+                  <strong>Skip Already Uploaded Videos</strong>
+                  <span class="history-badge" id="historyCountBadge">0 in history</span>
+                </div>
+                <span>Avoids duplicate uploads & bandwidth waste by skipping assets previously uploaded to Cloudinary.</span>
+              </div>
+            </div>
+
             <!-- Auto-Start Toggle -->
             <div class="option-toggle">
               <label class="switch">
@@ -263,15 +278,24 @@
         <div class="main-progress-card">
           <div class="progress-header">
             <div class="progress-stat">
-              <span class="stat-number" id="completedCount">0</span>
-              <span class="stat-label">Videos Uploaded</span>
+              <span class="stat-number text-emerald" id="completedCount">0</span>
+              <span class="stat-label">New Uploads</span>
             </div>
             <div class="progress-stat">
-              <span class="stat-number" id="totalCount">0</span>
+              <span class="stat-number text-cyan" id="alreadyUploadedCount">0</span>
+              <span class="stat-label">Already Uploaded</span>
+            </div>
+            <div class="progress-stat">
+              <span class="stat-number text-indigo" id="totalCount">0</span>
               <span class="stat-label">Total Videos Found</span>
             </div>
             <div class="progress-stat">
-              <span class="stat-number" id="failedCount">0</span>
+              <div class="stat-number-row">
+                <span class="stat-number text-rose" id="failedCount">0</span>
+                <button type="button" id="btnRetryFailed" class="btn-retry-badge hidden" title="Retry all failed videos">
+                  <i data-lucide="rotate-ccw"></i> Retry (<span id="retryFailedCount">0</span>)
+                </button>
+              </div>
               <span class="stat-label">Failed</span>
             </div>
             <div class="overall-percent" id="overallPercent">0%</div>
@@ -307,6 +331,9 @@
             <p>All extracted videos have been uploaded to Cloudinary with title, description, keywords, and contextual metadata.</p>
           </div>
           <div class="export-actions">
+            <button class="btn-sm btn-outline-warning hidden" id="btnRetryFailedResults" title="Retry all failed videos">
+              <i data-lucide="rotate-ccw"></i> Retry Failed (<span id="retryFailedResultsCount">0</span>)
+            </button>
             <button class="btn-sm btn-outline" id="btnExportJson">
               <i data-lucide="download"></i> Export JSON
             </button>
